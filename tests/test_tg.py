@@ -178,6 +178,35 @@ def test_ask_takes_two_to_ten_options(tg):
     assert tg.api.calls == []
 
 
+def test_checklist_sends_an_unticked_button_per_item_and_keeps_it(tg):
+    out = tg("checklist", "Tunis: documents", "Passport", " Boarding passes ").stdout.split()
+
+    method, fields, _ = tg.api.calls[0]
+    assert (method, rich(tg.api.calls[0])) == ("sendRichMessage", {"markdown": "Tunis: documents"})
+    assert json.loads(fields["reply_markup"]) == {"inline_keyboard": [
+        [{"text": "☐ Passport", "callback_data": "ask:0"}], [{"text": "☐ Boarding passes", "callback_data": "ask:1"}]]}
+    saved = json.loads((tg.root / "state" / "asks" / CHAT / f"{out[0]}.json").read_text())
+    assert saved == {"question": "Tunis: documents", "options": ["Passport", "Boarding passes"],
+                     "kind": "checklist", "ticked": []}
+    assert tg.recorded() == [int(out[0])]
+
+
+def test_checklist_needs_an_item_and_refuses_empty_or_too_many(tg):
+    assert tg("checklist", "Title", check=False).returncode == 1
+    assert tg("checklist", "Title", "a", " ", check=False).returncode == 1
+    assert tg("checklist", "Title", *[str(i) for i in range(51)], check=False).returncode == 1
+    assert tg.api.calls == []
+
+
+def test_checked_lists_what_is_ticked(tg):
+    msg_id = tg("checklist", "Packing", "Passport", "Charger").stdout.strip()
+    kept = tg.root / "state" / "asks" / CHAT / f"{msg_id}.json"
+    kept.write_text(json.dumps({**json.loads(kept.read_text()), "ticked": [1]}))
+
+    assert tg("checked", msg_id).stdout == "Packing\n- [ ] Passport\n- [x] Charger\n"
+    assert "no checklist" in tg("checked", "999", check=False).stderr
+
+
 def test_send_edit_and_ask_turn_highlights_into_bold(tg):
     tg("send", "Mind ==this==")
     tg("edit", "7", "Mind ==that==")

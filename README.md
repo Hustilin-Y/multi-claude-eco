@@ -236,6 +236,7 @@ The router also:
 
 - sets the bot's command menu, its description (the **What can this bot do?** box of an empty chat) and the line on its profile when it starts.
 - relays questions with buttons: an assistant asks with `tg ask`, you tap, the buttons are replaced by your choice, and the assistant edits the question to say what it will do. You can also just type an answer.
+- sends lists you tick off: an assistant sends one with `tg checklist`, one button per item, and each tap ticks the item ✅ or unticks it ☐ at once. (Telegram's own checklists can only be sent by a bot through a Telegram Business account.)
 - passes on your reactions: a 👍 or 👎 on any message reaches your assistant as a short answer to it, which it acts on when the meaning is clear and otherwise asks about.
 - passes on Claude Code's approval questions: when a built-in safety check stops an assistant, you get the question with Approve and Deny buttons. Claude Code denies it by itself after 2 minutes.
 - copes with the machine losing its network. Replies that can't reach Telegram are held and go out once they can, marked with when they were written; a request whose turn failed because Claude couldn't be reached is picked up again by itself; and the owner gets a quiet note about an outage of 3 minutes or more.

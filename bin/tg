@@ -14,6 +14,9 @@ Telegram's dark theme makes highlights unreadable.
                                                     of its own, which forwards alone; prints each id.
                                                     With --sound, it notifies even in quiet hours
   tg ask QUESTION OPTION...                         question with one button per option; prints message_id
+  tg checklist TITLE ITEM...                        a list with one button per item, which a tap ticks ✅
+                                                    or unticks ☐ (the router does it); prints message_id
+  tg checked MESSAGE_ID                             a checklist's items as "- [x] item" / "- [ ] item"
   tg edit MESSAGE_ID [--copy TEXT]... TEXT          edit a message sent earlier (no push notification);
                                                     its copy buttons are replaced by these
   tg react MESSAGE_ID EMOJI                         Telegram's fixed emoji whitelist only
@@ -31,7 +34,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 
-from multiclaude import addons, paths, questions  # noqa: E402
+from multiclaude import addons, jsonfile, paths, questions  # noqa: E402
 from multiclaude.telegram import (COPY_BUTTONS_MAX, COPY_TEXT_MAX, RICH_LIMIT, BotApi, ChatHistory,  # noqa: E402
                                   TelegramError, copy_buttons, send_or_hold, split_text, without_highlights)
 
@@ -40,6 +43,7 @@ EXIT_HELD = 75  # when a message was held for later (EX_TEMPFAIL)
 PHOTO_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 MAX_FILES = 50  # media in one rich message
 MAX_OPTIONS = 10
+MAX_ITEMS = 50  # checklist items; Telegram allows 100 buttons under a message
 
 
 class Usage(Exception):
@@ -144,6 +148,35 @@ class Tg:
         except OSError:
             pass  # without it a tap still arrives, with the label Telegram shows
 
+    def checklist(self, args):
+        if len(args) < 2:
+            raise Usage("tg checklist TITLE ITEM...")
+        title, items = without_highlights(args[0]), [item.strip() for item in args[1:]]
+        if not all(items):
+            raise TelegramError("tg checklist: an item is empty")
+        if len(items) > MAX_ITEMS:
+            raise TelegramError(f"tg checklist: at most {MAX_ITEMS} items; split it into several lists")
+        if len(title) > RICH_LIMIT:
+            raise TelegramError("tg checklist: the title is too long; send the details first with tg send")
+        self.need_chat()
+        result = self.api.call("sendRichMessage", chat_id=self.chat, rich_message={"markdown": title},
+                               reply_markup=questions.checklist_buttons(items, set()))
+        self.sent(result)
+        questions.save(paths.ASKS / str(self.chat), result["message_id"], title, items,
+                       kind=questions.CHECKLIST, ticked=[])
+
+    def checked(self, args):
+        if len(args) != 1:
+            raise Usage("tg checked MESSAGE_ID")
+        self.need_chat()
+        kept = jsonfile.read_json(paths.ASKS / str(self.chat) / f"{args[0]}.json", {})
+        if not isinstance(kept, dict) or kept.get("kind") != questions.CHECKLIST:
+            raise TelegramError(f"no checklist {args[0]} in this chat")
+        ticked = set(kept.get("ticked") or [])
+        print(kept.get("question", ""))
+        for n, item in enumerate(kept.get("options") or []):
+            print(f"- [{'x' if n in ticked else ' '}] {item}")
+
     def edit(self, args):
         message_id, args = args[:1], args[1:]
         copy = copyable(take_options(args, ("--copy",))["--copy"])
@@ -215,8 +248,8 @@ def reply(message_id):
     return {"message_id": int(message_id), "allow_sending_without_reply": True} if message_id else None
 
 
-COMMANDS = {"send": Tg.send, "ask": Tg.ask, "edit": Tg.edit, "react": Tg.react, "typing": Tg.typing,
-            "download": Tg.download}
+COMMANDS = {"send": Tg.send, "ask": Tg.ask, "checklist": Tg.checklist, "checked": Tg.checked, "edit": Tg.edit,
+            "react": Tg.react, "typing": Tg.typing, "download": Tg.download}
 
 
 def commands():

@@ -1809,6 +1809,23 @@ def test_cancel_drops_the_waiting_clear_and_lets_messages_through(r, desk, monke
     assert any("[header]" not in str(k) and "NO CANCEL" in str(k) for k in r.keystrokes)
 
 
+def test_a_tap_on_a_checklist_item_ticks_or_unticks_it_without_typing_anything(r, desk):
+    kept = r.paths.ASKS / ALICE_CHAT / "77.json"
+    kept.parent.mkdir(parents=True, exist_ok=True)
+    kept.write_text(json.dumps({"question": "Packing", "options": ["Passport", "Charger"], "kind": "checklist",
+                                "ticked": []}))
+
+    for n, (data, label) in enumerate([("ask:1", "☐ Charger"), ("ask:0", "☐ Passport"), ("ask:1", "✅ Charger"),
+                                       ("ask:9", "?")]):  # the last matches no item
+        desk.inbound(channel(label, msg_id="77", callback_id=f"cb-{n}", callback_data=data))
+
+    assert read_json(kept)["ticked"] == [0]
+    redraws = [p["reply_markup"]["inline_keyboard"] for m, p in r.api_calls if m == "editMessageReplyMarkup"]
+    assert [[row[0]["text"] for row in keyboard] for keyboard in redraws] == [
+        ["☐ Passport", "✅ Charger"], ["✅ Passport", "✅ Charger"], ["✅ Passport", "☐ Charger"]]
+    assert desk.users["alice"].queue == []
+
+
 def test_cancel_after_the_clear_started_is_too_late(r, desk):
     alice = busy(desk)
     desk.inbound(channel("/clear"))
