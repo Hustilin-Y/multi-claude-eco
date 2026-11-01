@@ -76,7 +76,7 @@ def test_no_key_belongs_to_nobody(v):
 def test_a_reply_reaches_the_waiting_request(v):
     request_id = "0badcafe"
     v.open_request(request_id, "alice", "640")
-    threading.Timer(0.05, v.post_reply, (request_id, "Two meetings tomorrow.")).start()
+    threading.Timer(0.05, v.post_reply, (request_id, "alice", "Two meetings tomorrow.")).start()
 
     assert v.await_reply(request_id, timeout=2) == "Two meetings tomorrow."
 
@@ -84,8 +84,16 @@ def test_a_reply_reaches_the_waiting_request(v):
 def test_posting_a_reply_returns_the_request(v):
     v.open_request("0badcafe", "alice", "640")
 
-    assert v.post_reply("0badcafe", "ok")["msg_id"] == "640"
-    assert v.post_reply("feedbeef", "late") == {}
+    assert v.post_reply("0badcafe", "alice", "ok")["msg_id"] == "640"
+    assert v.post_reply("feedbeef", "alice", "late") == {}
+
+
+def test_a_reply_to_someone_elses_request_is_refused(v):
+    v.open_request("0badcafe", "alice", "640")
+
+    with pytest.raises(ValueError, match="someone else's"):
+        v.post_reply("0badcafe", "bob", "Not yours.")
+    assert v.await_reply("0badcafe", timeout=0) is None
 
 
 def test_waiting_gives_up_after_the_timeout(v):
@@ -97,7 +105,7 @@ def test_waiting_gives_up_after_the_timeout(v):
 @pytest.mark.parametrize("bad", ["../../etc/x", "ABCDEF12", "1234567", ""])
 def test_a_malformed_request_id_is_refused(v, bad):
     with pytest.raises(ValueError):
-        v.post_reply(bad, "text")
+        v.post_reply(bad, "alice", "text")
 
 
 # --- Siri's requests from the relay ---------------------------------------------------------------
@@ -113,7 +121,7 @@ class Assistant:
         if user:
             self.v.open_request(request_id, user.name, "640")
             if self.answer:
-                self.v.post_reply(request_id, self.answer)
+                self.v.post_reply(request_id, user.name, self.answer)
         return bool(user)
 
 
@@ -241,6 +249,9 @@ def kind(work):
 
 # --- tg voice ---------------------------------------------------------------------------------------
 
+ALICE = {"ASSISTANT_USER": "alice"}
+
+
 @pytest.fixture
 def tg_voice(tg):
     """tg, with the siri add-in on in its copy of the repo."""
@@ -257,7 +268,7 @@ def test_voice_leaves_the_answer_for_siri_and_posts_it_under_the_question(tg_voi
     request.parent.mkdir(parents=True)
     request.write_text(json.dumps({"user": "alice", "msg_id": "640"}))
 
-    tg_voice("voice", "1a2b3c4d", "Two", "meetings.")
+    tg_voice("voice", "1a2b3c4d", "Two", "meetings.", env=ALICE)
 
     assert (tg_voice.root / "state" / "voice" / "1a2b3c4d.reply").read_text() == "Two meetings."
     call = tg_voice.api.calls[-1]
@@ -266,10 +277,21 @@ def test_voice_leaves_the_answer_for_siri_and_posts_it_under_the_question(tg_voi
 
 
 def test_a_late_voice_answer_is_still_posted(tg_voice):
-    tg_voice("voice", "0badcafe", "Done.")
+    tg_voice("voice", "0badcafe", "Done.", env=ALICE)
 
     assert rich(tg_voice.api.calls[-1])["markdown"] == "🔊 Done."
     assert not (tg_voice.root / "state" / "voice" / "0badcafe.reply").exists()
+
+
+def test_voice_refuses_to_answer_someone_elses_request(tg_voice):
+    request = tg_voice.root / "state" / "voice" / "1a2b3c4d.json"
+    request.parent.mkdir(parents=True)
+    request.write_text(json.dumps({"user": "bob", "msg_id": "640"}))
+
+    r = tg_voice("voice", "1a2b3c4d", "Not yours.", env=ALICE, check=False)
+
+    assert r.returncode == 1 and "someone else's" in r.stderr
+    assert tg_voice.api.calls == [] and not request.with_suffix(".reply").exists()
 
 
 def test_voice_refuses_a_malformed_request_id(tg_voice):

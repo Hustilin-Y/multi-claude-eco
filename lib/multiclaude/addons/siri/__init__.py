@@ -4,6 +4,7 @@ its "voice" envelope carries the key's SHA-256; the words go to that key's perso
 and the answer their assistant gives with `tg voice` is put back on the relay for Siri to speak.
 Keys and the reply mailbox are in voice.py; `assistant voice` (addons/siri/assistant-voice) makes
 and revokes keys."""
+import os
 import time
 
 from multiclaude import bot, telegram
@@ -95,6 +96,6 @@ def answer_with_tg(tg, args):
     if len(args) < 2:
         raise ValueError("tg voice ID TEXT")
     text = " ".join(args[1:])
-    request = voice.post_reply(args[0], text)
+    request = voice.post_reply(args[0], os.environ.get("ASSISTANT_USER", ""), text)
     tg.need_chat()
     tg.send_rich(f"🔊 {text}", reply_to=request.get("msg_id"))

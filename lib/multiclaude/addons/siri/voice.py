@@ -31,12 +31,14 @@ def open_request(request_id, name, msg_id):
     jsonfile.write_json(MAILBOX / f"{request_id}.json", {"user": name, "msg_id": msg_id, "since": time.time()})
 
 
-def post_reply(request_id, text):
-    """Leave the assistant's answer for the router, which waits for it (await_reply). The request's record,
-    or {} when it is unknown or already forgotten."""
+def post_reply(request_id, user, text):
+    """Leave user's answer for the router, which waits for it (await_reply). The request's record, or {}
+    when it is unknown or already forgotten. Another person's request is refused."""
     if not REQUEST_ID_RE.fullmatch(request_id):
         raise ValueError(f"not a voice request id: {request_id}")
     request = jsonfile.read_object(MAILBOX / f"{request_id}.json")
+    if request and request.get("user") != user:
+        raise ValueError(f"voice request {request_id} is someone else's")
     if request:
         reply = MAILBOX / f"{request_id}.reply"
         reply.with_suffix(".tmp").write_text(text)
