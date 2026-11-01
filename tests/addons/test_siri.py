@@ -102,6 +102,14 @@ def test_waiting_gives_up_after_the_timeout(v):
     assert v.await_reply("0badcafe", timeout=0.1) is None
 
 
+def test_an_entry_gone_during_the_cleanup_doesnt_stop_a_new_request(v):
+    v.MAILBOX.mkdir(parents=True)
+    (v.MAILBOX / "1a2b3c4d.tmp").symlink_to(v.MAILBOX / "renamed")  # listed, gone by the time it's read
+    v.open_request("0badcafe", "alice", "640")
+
+    assert v.post_reply("0badcafe", "alice", "ok")["msg_id"] == "640"
+
+
 @pytest.mark.parametrize("bad", ["../../etc/x", "ABCDEF12", "1234567", ""])
 def test_a_malformed_request_id_is_refused(v, bad):
     with pytest.raises(ValueError):

@@ -6,6 +6,7 @@ puts the answer back on the relay for Siri to speak.
 Keys are kept only as SHA-256 hashes, in state/voice-keys.json (multiclaude.keyring). Each
 request leaves state/voice/<id>.json (who asked, and the Telegram record of the question) and, once
 answered, <id>.reply."""
+import contextlib
 import re
 import time
 
@@ -61,5 +62,6 @@ def forget_old_requests():
     if not MAILBOX.is_dir():
         return
     for path in MAILBOX.iterdir():
-        if time.time() - path.stat().st_mtime > REQUEST_KEPT_FOR:
-            path.unlink(missing_ok=True)
+        with contextlib.suppress(FileNotFoundError):  # a reply renamed into place, or another cleanup's
+            if time.time() - path.stat().st_mtime > REQUEST_KEPT_FOR:
+                path.unlink()
