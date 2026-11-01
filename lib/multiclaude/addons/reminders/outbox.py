@@ -2,8 +2,9 @@
 snapshot.FOLDER/<telegram id>.outbox.json until a sync of their Reminders shortcut takes them:
 {"queued": [...], "delivered": [...]}. Each is {"id", "list", "title", "notes", "due", "queued"}, and
 once a sync's answer took it, it moves to the last DELIVERED_KEPT delivered with "delivered", the
-Unix time of that sync. The assistant (through `assistant reminders`) and the router edit the file
-at once, so every edit holds its lock."""
+Unix time of that sync. While a sync's answer carries one, it stays queued, marked "sending" (a Unix
+time), so a router stopped mid-sync loses none. The assistant (through `assistant reminders`) and the
+router edit the file at once, so every edit holds its lock."""
 import secrets
 import time
 
@@ -12,6 +13,7 @@ from multiclaude.addons.reminders import snapshot
 
 DELIVERED_KEPT = 50
 SENT_FIELDS = ("id", "list", "title", "notes", "due")  # what the shortcut gets of each
+SENDING_STALE_AFTER = 5 * 60  # far past the relay's 10 s wait: the router that marked it has stopped
 
 
 def path(chat_id):
@@ -59,25 +61,48 @@ def cancel(chat_id, reminder_id):
 
 
 def take(chat_id):
-    """Everything queued, taken out for a sync's answer."""
-    def take_all(data):
-        taken, data["queued"] = data["queued"], []
-        return taken
+    """The queued reminders no other sync's answer is carrying, marked "sending" for this one's."""
+    now = time.time()
 
-    return edit(chat_id, take_all)
+    def mark_free(data):
+        free = [r for r in data["queued"] if now - r.get("sending", 0) > SENDING_STALE_AFTER]
+        for reminder in free:
+            reminder["sending"] = int(now)
+        return free
+
+    return edit(chat_id, mark_free)
 
 
 def put_back(chat_id, taken):
-    """Reminders a sync's answer didn't deliver after all, ahead of any queued since."""
-    edit(chat_id, lambda data: data.update(queued=taken + data["queued"]))
+    """Reminders a sync's answer didn't deliver after all: unmarked, for the next sync."""
+    ids = ids_of(taken)
+
+    def unmark(data):
+        for reminder in data["queued"]:
+            if reminder.get("id") in ids:
+                reminder.pop("sending", None)
+
+    edit(chat_id, unmark)
 
 
 def delivered(chat_id, taken, when):
-    """Log reminders a sync's answer at when (a Unix time) delivered."""
-    def log_delivered(data):
-        data["delivered"] = (data["delivered"] + [{**r, "delivered": int(when)} for r in taken])[-DELIVERED_KEPT:]
+    """Move reminders a sync's answer at when (a Unix time) delivered from the queue to the log."""
+    ids = ids_of(taken)
 
-    edit(chat_id, log_delivered)
+    def move(data):
+        data["queued"] = [r for r in data["queued"] if r.get("id") not in ids]
+        went = [{**unmarked(r), "delivered": int(when)} for r in taken]
+        data["delivered"] = (data["delivered"] + went)[-DELIVERED_KEPT:]
+
+    edit(chat_id, move)
+
+
+def ids_of(reminders):
+    return {r.get("id") for r in reminders}
+
+
+def unmarked(reminder):
+    return {field: value for field, value in reminder.items() if field != "sending"}
 
 
 def for_shortcut(taken):

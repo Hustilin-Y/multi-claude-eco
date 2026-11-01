@@ -4,7 +4,9 @@ import json
 import os
 import subprocess
 import sys
+import time
 import urllib.error
+from types import SimpleNamespace
 
 import pytest
 
@@ -133,6 +135,27 @@ def test_reminders_wait_when_the_relay_cant_be_reached(r, desk, rem, monkeypatch
     sync_from_phone(desk, rem.key_hash, "Milk")
 
     assert [x["title"] for x in rem.outbox.read(ALICE_CHAT)["queued"]] == ["Bread"]
+
+
+def test_reminders_another_syncs_answer_carries_dont_go_twice(r, desk, rem):
+    rem.outbox.add(ALICE_CHAT, "Bread", "Groceries")
+    rem.outbox.take(ALICE_CHAT)
+    sync_from_phone(desk, rem.key_hash, "Milk")
+
+    assert rem.answered == [("/reminders/0badcafe", {"add": []})]
+
+
+def test_reminders_a_router_stopped_mid_sync_was_sending_go_with_a_later_sync(r, desk, rem, monkeypatch):
+    reminder_id = rem.outbox.add(ALICE_CHAT, "Bread", "Groceries")
+    stopped_at = time.time() - rem.outbox.SENDING_STALE_AFTER - 1
+    with monkeypatch.context() as m:
+        m.setattr(rem.outbox, "time", SimpleNamespace(time=lambda: stopped_at))
+        rem.outbox.take(ALICE_CHAT)
+    sync_from_phone(desk, rem.key_hash, "Milk")
+
+    assert [x["id"] for x in rem.answered[-1][1]["add"]] == [reminder_id]
+    kept = rem.outbox.read(ALICE_CHAT)
+    assert kept["queued"] == [] and "sending" not in kept["delivered"][0]
 
 
 def test_a_cancelled_reminder_never_goes(r, desk, rem):
