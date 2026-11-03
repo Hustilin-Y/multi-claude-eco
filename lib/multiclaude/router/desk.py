@@ -7,7 +7,7 @@ import threading
 import time
 import traceback
 
-from multiclaude import addons, bot, jsonfile, paths, telegram
+from multiclaude import addons, background, bot, jsonfile, paths, telegram
 from multiclaude import users as registry
 from multiclaude.channels import TelegramChat
 from multiclaude.log import log
@@ -284,11 +284,17 @@ class Desk:
             self.deliver(user, msg, now)
 
     def stop(self, user):
-        """/stop: its worker presses Escape (work.stop), and a request dropped on an API error
-        isn't picked up again."""
+        """/stop: its worker presses Escape (work.stop), what its assistant runs in the background
+        ends too, and a request dropped on an API error isn't picked up again."""
         user.pickups.cancel()
+        shell = user.shell_pid()
+        ended = background.end(user.name, shell) if shell else []
+        if ended:
+            log(f"{user.name}: /stop ended {', '.join(ended)}")
+            telegram.later(user.say, f"⏹️ Ended in the background: {', '.join(ended)}.")
         if not user.turn.busy:
-            telegram.later(user.say, f"{bot.name()} isn't working on anything, so there's nothing to stop.")
+            if not ended:
+                telegram.later(user.say, f"{bot.name()} isn't working on anything, so there's nothing to stop.")
             return
         log(f"{user.name}: /stop requested")
         user.stop_requested = True

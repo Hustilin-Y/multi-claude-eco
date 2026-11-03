@@ -39,6 +39,8 @@ TAKEOVERS = STATE / "takeovers"
 HEALTH = STATE / "health"
 # What an assistant's terminal showed when something held it up, <name>/<time>-<why>.txt (session.py).
 SCREENS = STATE / "screens"
+# Work an assistant runs in the background that /stop ends too, <name>/<pid>.json (background.py).
+BACKGROUND = STATE / "background"
 
 PROJECTS = CLAUDE_DIR / "projects"
 USER_SETTINGS = CLAUDE_DIR / "settings.json"

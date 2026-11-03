@@ -219,7 +219,7 @@ A person's entry in `users.json` can also hold `"timezone"` (an IANA name such a
 | --- | --- |
 | `/clear` | Clears your assistant's conversation (memory is kept), first reloading its plugins and skills so it starts on their latest versions, and deletes your chat with the bot from the last 48 hours. While your assistant is busy, `/clear` waits for it to finish and says so, with a **Cancel** button. |
 | `/restart` | A harder `/clear`: ends your assistant's Claude Code process at once, even mid-task or stuck, and starts a new one with a new conversation. That also reloads its MCP servers, plugins and settings. Memory, files and session-only `/model` and `/effort` switches stay. |
-| `/stop` | Stops what your assistant is doing, like pressing Esc in its terminal. A message it hadn't started to answer is taken back. Messages you sent meanwhile still come next. |
+| `/stop` | Stops what your assistant is doing, like pressing Esc in its terminal, and what it runs in the background, such as an OpenCode run. A message it hadn't started to answer is taken back. Messages you sent meanwhile still come next. |
 | `/usage` | Context used, session cost, model and effort, the plan's limits, and what all sessions have cost so far, per person |
 | `/model`, `/model opus`, `/model opus default` | Shows or switches the model. A switch is for this session only; adding `default` also keeps it after the session restarts and for scheduled jobs. |
 | `/effort`, `/effort high`, `/effort high default` | The same, for effort (`low`, `medium`, `high`, `xhigh`, `max`) |
@@ -295,6 +295,7 @@ assistant attach [<name>]       # watch someone's assistant (or the front desk);
 assistant start|stop|restart    # front desk, every assistant and the router
 assistant start-users           # start any person's assistant that isn't running
 assistant notify [--user <name>] "text"         # a Telegram message to one person (default: the owner)
+assistant background [--user <name>] <pid> "what"   # a process an assistant runs in the background, for /stop to end
 assistant job [--user <name>] [--model <m>] [--deny <tools>] "instructions"   # a one-shot task whose answer goes to that person
 assistant health                # the machine now: CPU, memory, swap, disks, the router and each assistant
 assistant shared list           # plugins, skills and marketplaces: shared and per person

@@ -351,6 +351,23 @@ def test_reload_plugins_refuses_an_unknown_user(home):
     assert not (home.root / "state" / "reload-requests" / "nobody").exists()
 
 
+def test_background_lists_a_process_the_assistant_runs_for_its_persons_stop(home, tmp_path):
+    proc = FakeProc(tmp_path / "proc")
+    proc.process(4300, "python3", 30, "python3", "bin/opencode", started=1234)
+
+    r = home.run("background", "4300", "OpenCode", env={"ASSISTANT_PROC": str(proc.root), "ASSISTANT_USER": "alice"})
+
+    assert r.returncode == 0, r.stderr
+    listed = home.root / "state" / "background" / "alice" / "4300.json"
+    assert json.loads(listed.read_text()) == {"what": "OpenCode", "started": "1234"}
+
+
+def test_background_refuses_a_process_that_isnt_running(home, tmp_path):
+    proc = FakeProc(tmp_path / "proc")
+    r = home.run("background", "--user", "alice", "4300", "OpenCode", env={"ASSISTANT_PROC": str(proc.root)})
+    assert r.returncode != 0 and "no process 4300" in r.stderr
+
+
 def test_add_user_gives_whats_shared_back_before_the_newcomers_session_starts(home):
     foo = "foo@claude-plugins-official"
     (home.root / "state").mkdir()

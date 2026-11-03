@@ -289,6 +289,13 @@ class Session:
         log(f"{self.name}: no new transcript after /clear")
         return False
 
+    def shell_pid(self):
+        """The pid of the shell its assistant runs in, or None when tmux can't say."""
+        try:
+            return int(self.pane.shell_pid())
+        except (subprocess.SubprocessError, OSError, ValueError):
+            return None
+
     def stop(self):
         """Press Escape, as a person would, which stops the turn. Confirmed by the note Claude
         Code writes for it or, before any reply, by the message it puts back in the message box.

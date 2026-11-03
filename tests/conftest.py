@@ -635,11 +635,13 @@ class FakeProc:
         (self.root / "loadavg").write_text("0.52 0.40 0.35 2/300 4000\n")
         (self.root / "uptime").write_text("47663.03 274092.79\n")
 
-    def process(self, pid, name, mb, *args, ppid=1, cwd=None, pss_mb=None):
-        """A process holding mb resident; with pss_mb, the kernel tells its proportional share too."""
+    def process(self, pid, name, mb, *args, ppid=1, cwd=None, pss_mb=None, started=1000):
+        """A process holding mb resident, started that many clock ticks after boot; with pss_mb, the
+        kernel tells its proportional share too."""
         folder = self.root / str(pid)
-        folder.mkdir()
-        (folder / "stat").write_text(f"{pid} ({name}) S {ppid} {pid} {pid} 0 -1 4194304 0 0\n")
+        folder.mkdir(exist_ok=True)
+        (folder / "stat").write_text(f"{pid} ({name}) S {ppid} {pid} {pid} 0 -1 4194304 0 0 0 0 0 0 0 0 20 0 1 0 "
+                                     f"{started} 0 0\n")
         (folder / "statm").write_text(f"9999 {round(mb * self.MB / self.PAGE_SIZE)} 100 5 0 123 0\n")
         (folder / "cmdline").write_bytes(b"".join(arg.encode() + b"\0" for arg in args))
         if cwd:

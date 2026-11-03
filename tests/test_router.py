@@ -3,6 +3,7 @@ import fcntl
 import json
 import os
 import queue
+import signal
 import subprocess
 import threading
 import time
@@ -11,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import (ALICE_CHAT, BOB_CHAT, append, block_text, channel, read_json, sent, shown, transcript,
+from conftest import (ALICE_CHAT, BOB_CHAT, FakeProc, append, block_text, channel, read_json, sent, shown, transcript,
                       write_json)
 
 
@@ -1772,6 +1773,78 @@ def test_stop_before_any_reply_empties_the_box_the_message_was_put_back_in(r, de
     assert r.keystrokes.count(ESCAPE) == 3
     assert sent(r, ALICE_CHAT) == ["⏹️ Stopped."]
     assert not alice.turn.busy
+
+
+# What Alice's assistant runs in the background: her session's shell 4242 → claude 4243 → bash 4250.
+
+@pytest.fixture
+def alices_machine(r, tmp_path, monkeypatch):
+    """A /proc where Alice's assistant runs in its tmux shell 4242, and the signals sent to processes."""
+    proc = FakeProc(tmp_path / "proc")
+    proc.process(4243, "claude", 400, "claude", ppid=4242)
+    proc.process(4250, "bash", 5, "bash", "-c", "bin/ue-agent", ppid=4243)
+    monkeypatch.setattr(r.paths, "PROC", proc.root)
+    record = r.tmux.run
+
+    def run(*args, stdin=None):
+        if args[0] == "display-message":
+            return subprocess.CompletedProcess(args, 0, b"4242\n", b"")
+        return record(*args, stdin=stdin)
+
+    monkeypatch.setattr(r.tmux, "run", run)
+    signals = []
+    monkeypatch.setattr(os, "kill", lambda pid, number: signals.append((pid, number)))
+    return SimpleNamespace(proc=proc, signals=signals)
+
+
+def test_stop_ends_what_the_assistant_runs_in_the_background_even_when_it_is_idle(r, desk, alices_machine):
+    # 3 Nov 2026: an OpenCode run the assistant had started went on for up to 15 minutes after /stop.
+    from multiclaude import background
+    alices_machine.proc.process(4300, "python3", 30, "python3", "bin/opencode", ppid=4250)
+    background.add("alice", 4300, "OpenCode")
+
+    desk.inbound(channel("/stop"))
+
+    assert alices_machine.signals == [(4300, signal.SIGTERM)]
+    assert sent(r, ALICE_CHAT) == ["⏹️ Ended in the background: OpenCode."]
+    assert background.still_running("alice") == []
+
+
+def test_stop_while_it_works_ends_the_background_run_and_presses_escape(r, desk, escape_stops, alices_machine):
+    from multiclaude import background
+    alices_machine.proc.process(4300, "python3", 30, "python3", "bin/opencode", ppid=4250)
+    background.add("alice", 4300, "OpenCode")
+    busy(desk)
+
+    desk.inbound(channel("/stop"))
+    desk.workers["alice"].step(time.time())
+
+    assert alices_machine.signals == [(4300, signal.SIGTERM)]
+    assert ESCAPE in r.keystrokes
+    assert sent(r, ALICE_CHAT) == ["⏹️ Ended in the background: OpenCode.", "⏹️ Stopped."]
+
+
+def test_stop_leaves_a_scheduled_jobs_run_going(r, desk, alices_machine):
+    from multiclaude import background
+    alices_machine.proc.process(4400, "python3", 30, "python3", "bin/opencode", ppid=1)  # under cron, not her session
+    background.add("alice", 4400, "OpenCode")
+
+    desk.inbound(channel("/stop"))
+
+    assert alices_machine.signals == []
+    assert sent(r, ALICE_CHAT) == ["Claude isn't working on anything, so there's nothing to stop."]
+
+
+def test_stop_never_ends_a_process_the_kernel_gave_a_listed_pid_since(r, desk, alices_machine):
+    from multiclaude import background
+    alices_machine.proc.process(4300, "python3", 30, "python3", "bin/opencode", ppid=4250, started=1000)
+    background.add("alice", 4300, "OpenCode")
+    alices_machine.proc.process(4300, "node", 60, "node", "mcp-server.js", ppid=4243, started=2000)
+
+    desk.inbound(channel("/stop"))
+
+    assert alices_machine.signals == []
+    assert background.still_running("alice") == []
 
 
 def test_a_clear_that_waits_offers_cancel_once(r, desk):

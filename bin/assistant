@@ -515,6 +515,17 @@ cmd_reload_plugins() {
   echo "The router reloads $user's plugins and skills once their assistant is idle."
 }
 
+# A program an assistant runs in the background (an OpenCode run, a long download) lists itself
+# while it runs, so its person's /stop ends it too: Escape stops only the assistant's turn.
+cmd_background() {
+  local user=${ASSISTANT_USER:-}
+  if [ "${1:-}" = "--user" ]; then user=${2:-}; shift 2; fi
+  [ -n "$user" ] || user=$(owner_name)
+  [ $# -eq 2 ] || die 'usage: assistant background [--user <name>] <pid> "<what>"'
+  [ -n "$(user_field "$user" telegram_id)" ] || die "unknown user '$user' (see $USERS)"
+  python3 -I "$ROOT/bin/background.py" "$user" "$1" "$2"
+}
+
 # The relay (relay/): a Cloudflare Worker that serves the control panel's page, holds its taps while
 # the machine is offline, and takes in what the add-ins that are on bring (their routes in
 # relay/src). Deploy it with the token in state/cloudflare.json, set its secrets, have each add-in
@@ -731,6 +742,9 @@ assistant job [--user <name>] [--tools <tools>] [--deny <tools>] [--model <model
 assistant reload-plugins [--user <name>]
                                 Have the router type /reload-plugins into that user's assistant
                                 once it's idle (after it installed or updated a plugin or skill)
+assistant background [--user <name>] <pid> "<what>"
+                                List a process that user's assistant runs in the background
+                                (default: the assistant running it), so their /stop ends it too
 assistant notify [--user <name>] "<msg>"
                                 Send a Telegram message to one user (default: the owner)
 assistant shared sync [--dry-run] [--wait]
@@ -766,6 +780,7 @@ case "${1:-help}" in
   job)     shift; cmd_job "$@" ;;
   notify)  shift; cmd_notify "$@" ;;
   reload-plugins) shift; cmd_reload_plugins "$@" ;;
+  background) shift; cmd_background "$@" ;;
   shared)  shift; exec python3 -I "$ROOT/bin/shared.py" "$@" ;;
   health)  shift; exec python3 -I "$ROOT/bin/health.py" "$@" ;;
   relay)   shift; cmd_relay "$@" ;;
