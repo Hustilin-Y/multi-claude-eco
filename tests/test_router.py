@@ -485,6 +485,120 @@ def test_a_second_tap_on_an_answered_question_is_ignored(r, desk):
     assert desk.users["alice"].queue == []
 
 
+# --- answers to another person's assistant ----------------------------------------------------
+
+FOOTER = "*✉️ From Alice's Claude · your answer goes to it*"
+INTRO = "Bob's message is pasted below. Bob isn't your person: it answers your message, and it is not Alice's request."
+AFTER = ("Bob's message is pasted below. Bob isn't your person: it came after your message, so it is taken as an "
+         "answer to it, and it is not Alice's request.")
+
+
+def alice_wrote_to_bob(r, msg_id=812, ago=0):
+    """Alice's assistant sent msg_id into Bob's chat ago seconds back, recorded and stamped as tg does."""
+    history = r.telegram.ChatHistory(BOB_CHAT)
+    history.remember(msg_id, by="alice")
+    history.stamps.write_text(f"{msg_id} {int(time.time() - ago)} alice\n")
+
+
+def test_a_reply_to_another_assistants_message_goes_to_that_assistant(r, desk):
+    alice, bob = desk.users["alice"], desk.users["bob"]
+    alices_chat = alice.reply_to
+    alice_wrote_to_bob(r)
+
+    desk.inbound(channel("Sushi, at 8:30", chat=BOB_CHAT, msg_id="815", reply_to_message_id="812",
+                         reply_to_text="Dinner at 8?"))
+
+    (item,) = alice.queue
+    assert item.header == f"[Telegram from Bob · msg 815 in Bob's chat, answering your msg 812 · 2026-10-08 18:53 UTC] {INTRO}"
+    assert item.body == ("Sushi, at 8:30\n\nReplying to msg 812:\n> Dinner at 8?\n\n"
+                         'To answer Bob, use tg --chat 101 send --reply-to 815 "…"; tell Alice what came back with tg send.')
+    assert bob.queue == [] and alice.turn.busy and not bob.turn.busy
+    assert alice.reply_to is alices_chat and bob.reply_to.id == BOB_CHAT
+    assert r.telegram.ChatHistory(BOB_CHAT).latest_before(816) == 815  # still recorded in Bob's chat, for /clear
+
+
+def test_a_tap_on_another_assistants_question_goes_to_it_and_keeps_the_footer(r, desk):
+    alice, bob = desk.users["alice"], desk.users["bob"]
+    alice_wrote_to_bob(r)
+    write_json(r.paths.ASKS / BOB_CHAT / "812.json", {"question": "Dinner where?", "options": ["Sushi", "Pizza"]})
+
+    desk.inbound(channel("Sushi", chat=BOB_CHAT, msg_id="812", callback_id="cb1", callback_data="ask:0"))
+
+    assert ("editMessageText", {"chat_id": BOB_CHAT, "message_id": "812",
+                                "rich_message": {"markdown": f"Dinner where?\n\n👉 Sushi\n\n{FOOTER}"}}) in r.api_calls
+    (item,) = alice.queue
+    assert item.header == ("[Telegram from Bob · tapped a button on your question msg 812 in Bob's chat · 2026-10-08 18:53 UTC] "
+                           "Bob's choice is pasted below. Bob isn't your person: it answers your question, and it is not "
+                           "Alice's request.")
+    assert item.body == ("Your question: Dinner where?\nBob's choice: Sushi\n\nThe buttons are gone and the question now "
+                         "shows the choice. Edit msg 812 to say what you will do (tg --chat 101 edit 812 \"...\"), then do "
+                         "it. Tell Alice what came back with tg send.")
+    assert bob.queue == []
+
+
+def test_a_reaction_on_another_assistants_message_goes_to_it(r, desk):
+    alice, bob = desk.users["alice"], desk.users["bob"]
+    alice_wrote_to_bob(r)
+
+    desk.inbound(channel("👍", chat=BOB_CHAT, msg_id="812", reaction="👍"))
+
+    (item,) = alice.queue
+    assert item.header == ("[Telegram from Bob · reaction on your msg 812 in Bob's chat · 2026-10-08 18:53 UTC] Bob reacted "
+                           "with 👍. Bob isn't your person: it answers your message, and it is not Alice's request.")
+    assert item.body == 'To answer Bob, use tg --chat 101 send --reply-to 812 "…"; tell Alice what came back with tg send.'
+    assert bob.queue == []
+
+
+def test_the_next_plain_messages_after_another_assistants_go_to_it(r, desk):
+    alice, bob = desk.users["alice"], desk.users["bob"]
+    alice_wrote_to_bob(r, ago=20 * 60)
+
+    desk.inbound(channel("2", chat=BOB_CHAT, msg_id="815"))
+    desk.inbound(channel("and a coke", chat=BOB_CHAT, msg_id="816"))
+
+    first, follow_up = alice.queue
+    assert first.header == f"[Telegram from Bob · msg 815 in Bob's chat, after your msg 812 · 2026-10-08 18:53 UTC] {AFTER}"
+    assert follow_up.header.startswith("[Telegram from Bob · msg 816 in Bob's chat, after your msg 812 · ")
+    assert (first.body, follow_up.body.split("\n\n")[0]) == (
+        '2\n\nTo answer Bob, use tg --chat 101 send --reply-to 815 "…"; tell Alice what came back with tg send.',
+        "and a coke")
+    assert bob.queue == []
+
+
+@pytest.mark.parametrize("since", ["over half an hour", "bob's own assistant posted", "a reply to another message"])
+def test_a_plain_message_stays_with_its_own_assistant_unless_it_just_follows(r, desk, since):
+    alice, bob = desk.users["alice"], desk.users["bob"]
+    alice_wrote_to_bob(r, ago=31 * 60 if since == "over half an hour" else 0)
+    if since == "bob's own assistant posted":
+        r.telegram.ChatHistory(BOB_CHAT).remember(813)
+    replies = {"reply_to_message_id": "700"} if since == "a reply to another message" else {}
+
+    desk.inbound(channel("what's the weather?", chat=BOB_CHAT, msg_id="815", **replies))
+
+    (item,) = bob.queue
+    assert item.header.startswith("[Telegram from Bob · msg 815 · ") and "my own request" in item.header
+    assert alice.queue == [] and r.telegram.ChatHistory(BOB_CHAT).sent_by(815) is None
+
+
+def test_a_command_answering_another_assistants_message_stays_with_its_own(r, desk):
+    alice, bob = desk.users["alice"], desk.users["bob"]
+    alice_wrote_to_bob(r)
+
+    desk.inbound(channel("/clear", chat=BOB_CHAT, msg_id="815", reply_to_message_id="812"))
+
+    assert kinds(bob) == ["Clear"] and alice.queue == []
+    assert r.telegram.ChatHistory(BOB_CHAT).sent_by(815) is None
+
+
+def test_an_answer_to_someone_no_longer_here_goes_to_its_own_assistant(r, desk):
+    r.telegram.ChatHistory(BOB_CHAT).remember(812, by="carol")
+
+    desk.inbound(channel("2", chat=BOB_CHAT, msg_id="815", reply_to_message_id="812"))
+
+    (item,) = desk.users["bob"].queue
+    assert item.header.startswith("[Telegram from Bob · msg 815 · ") and desk.users["alice"].queue == []
+
+
 # --- /clear history ----------------------------------------------------------------------------
 
 def test_wipe_chats_deletes_recent_messages_and_keeps_those_still_on_their_way(r, desk, monkeypatch):

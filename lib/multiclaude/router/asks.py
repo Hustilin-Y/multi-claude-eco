@@ -1,14 +1,14 @@
 """Taps on question buttons: `tg ask` questions (kept in paths.ASKS), whose choice the router shows
-on the question at once and then types into the assistant, the router's own questions (approval
-dialogs, the Cancel under a waiting /clear), which it answers itself, and `tg checklist` items,
-which it ticks or unticks itself. An add-in that brings another
+on the question at once and then types into the assistant that asked, the router's own questions
+(approval dialogs, the Cancel under a waiting /clear), which it answers itself, and `tg checklist`
+items, which it ticks or unticks itself. An add-in that brings another
 app answers taps there with the same steps: clear_cancel_tapped, full_label, save_answer and
 deliver_choice."""
 import re
 import threading
 from collections import defaultdict
 
-from multiclaude import jsonfile, paths, questions, telegram
+from multiclaude import crosschat, jsonfile, paths, questions, telegram
 from multiclaude.channels import TelegramChat
 from multiclaude.log import log
 from multiclaude.router import approvals, work
@@ -21,7 +21,10 @@ CLEAR_TOO_LATE = "⌛ Too late: the clear had already started."
 CHECKLIST_LOCKS = defaultdict(threading.Lock)
 
 
-def answer(user, tap, now):
+def answer(user, tap, now, to=None):
+    """A tap by user in their chat. A `tg ask` question's choice goes to to, the assistant of
+    another person that asked it there (Desk.writer_of), or else to user's own."""
+    to = to or user
     msg_id = tap.msg_id
     if not str(msg_id).isdigit():
         log(f"{user.name}: button tap without a question message id; ignored")
@@ -45,22 +48,28 @@ def answer(user, tap, now):
         approval_tapped(user, path, ask, msg_id, label)
         return
     if question:
+        shown = f"{question}\n\n👉 {telegram.markdown_literal(label)}"
+        if to is not user:
+            shown = crosschat.with_footer(shown, to.display)
         telegram.later(telegram.api, "editMessageText", chat_id=user.chat_id, message_id=msg_id,
-                       rich_message={"markdown": f"{question}\n\n👉 {telegram.markdown_literal(label)}"})
+                       rich_message={"markdown": shown})
         save_answer(user, path, ask, msg_id, label)
     else:
         telegram.later(telegram.api, "editMessageReplyMarkup", chat_id=user.chat_id, message_id=msg_id)  # buttons gone
-    deliver_choice(user, tap, question, label, TelegramChat.cli, now)
+    deliver_choice(to, tap, question, label, TelegramChat.cli, now)
 
 
 def deliver_choice(user, tap, question, label, tool, now):
-    """Type the choice into the assistant, which then edits the question with tool (the chat's cli)."""
+    """Type the choice into user's assistant, which then edits the question with tool (the chat's cli)."""
     msg_id = tap.msg_id
     header = messages.header(user.display, tap, what="tapped a button on your question msg {id}",
                              intro="My answer is pasted below; it is my own choice:")
-    body = ((f"Your question: {question}\n" if question else "") + f"My choice: {label}\n\n"
-            f"The buttons are gone and the question now shows my choice. Edit msg {msg_id} to say "
-            f"what you will do ({tool} edit {msg_id} \"...\"), then do it.")
+    chooser = f"{tap.via.sender}'s" if tap.via else "My"
+    body = ((f"Your question: {question}\n" if question else "") + f"{chooser} choice: {label}\n\n"
+            f"The buttons are gone and the question now shows the choice. Edit msg {msg_id} to say "
+            f"what you will do ({messages.cli_for(tap, tool)} edit {msg_id} \"...\"), then do it.")
+    if tap.via:
+        body += f" Tell {tap.via.person} what came back with tg send."
     user.queue_message(work.Deliver(now, header, body, msg_id), now)
     log(f"{user.name}: button {label!r} on question {msg_id} queued for delivery")
 

@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from conftest import CHAT, nowhere
+from conftest import BOB_CHAT, CHAT, nowhere
 
 
 def rich(call):
@@ -294,3 +294,94 @@ def test_a_message_telegram_cant_be_reached_for_is_held_and_goes_out_first_next_
     assert rich(tg.api.calls[1]) == {"markdown": "back online"}
     assert out == ["502"] and tg.recorded() == [501, 502]
     assert not any((tg.root / "state" / "outbox" / CHAT).iterdir())
+
+
+# --- messages into another person's chat -------------------------------------------------------
+
+FOOTER = "*✉️ From Alice's Claude · your answer goes to it*"
+AS_ALICE = {"ASSISTANT_USER": "alice"}
+
+
+@pytest.fixture
+def people(tg):
+    """Alice (tg's own chat) and Bob, as users.json lists them."""
+    (tg.root / "users.json").write_text(json.dumps({"alice": {"telegram_id": CHAT, "display": "Alice"},
+                                                    "bob": {"telegram_id": BOB_CHAT, "display": "Bob"}}))
+
+
+def stamps(tg, chat=BOB_CHAT):
+    """The stamped ids in a chat, each with whose assistant it's with."""
+    path = tg.root / "state" / "messages" / f"{chat}.by"
+    return [(int(line.split()[0]), line.split()[2]) for line in path.read_text().splitlines()] if path.exists() else []
+
+
+def test_a_send_into_another_persons_chat_is_stamped_and_ends_with_one_footer(tg, people):
+    out = tg("--chat", "bob", "send", "Dinner at 8?", env=AS_ALICE).stdout.split()
+
+    assert tg.api.calls[0][1]["chat_id"] == BOB_CHAT
+    assert rich(tg.api.calls[0]) == {"markdown": f"Dinner at 8?\n\n{FOOTER}"}
+    assert out == ["501"] and tg.recorded(BOB_CHAT) == [501] and stamps(tg) == [(501, "alice")]
+
+
+@pytest.mark.parametrize("chat, env", [
+    (CHAT, AS_ALICE),           # its own person's chat
+    (BOB_CHAT, {}),             # no assistant: cron, the router
+    ("777", AS_ALICE),          # a chat that is nobody's here
+], ids=["own chat", "no assistant", "a stranger"])
+def test_only_an_assistant_writing_into_another_persons_chat_stamps_and_signs(tg, people, chat, env):
+    tg("--chat", chat, "send", "hi", env=env)
+
+    assert rich(tg.api.calls[0]) == {"markdown": "hi"}
+    assert stamps(tg, chat) == []
+
+
+def test_a_long_text_is_stamped_in_every_part_and_signed_in_the_last(tg, people):
+    tg("--chat", BOB_CHAT, "send", "a" * 32000 + "b" * 10, env=AS_ALICE)
+
+    assert [rich(c)["markdown"] for c in tg.api.calls] == ["a" * 32000, f"{'b' * 10}\n\n{FOOTER}"]
+    assert stamps(tg) == [(501, "alice"), (502, "alice")]
+
+
+def test_separate_files_are_each_stamped_and_the_text_signed(tg, people, tmp_path):
+    doc = tmp_path / "menu.pdf"
+    doc.write_bytes(b"pdf")
+
+    tg("--chat", BOB_CHAT, "send", "--separate", "--file", str(doc), "The menu", env=AS_ALICE)
+    tg("--chat", BOB_CHAT, "send", "--separate", "--file", str(doc), env=AS_ALICE)
+
+    assert tg.api.methods() == ["sendRichMessage", "sendDocument", "sendRichMessage", "sendDocument"]
+    assert [rich(tg.api.calls[n])["markdown"] for n in (0, 2)] == [f"The menu\n\n{FOOTER}", FOOTER]
+    assert stamps(tg) == [(501, "alice"), (502, "alice"), (503, "alice"), (504, "alice")]
+
+
+def test_a_question_and_a_checklist_are_signed_and_kept_without_the_footer(tg, people):
+    asked = tg("--chat", BOB_CHAT, "ask", "Which?", "Sushi", "Pizza", env=AS_ALICE).stdout.strip()
+    listed = tg("--chat", BOB_CHAT, "checklist", "Shopping", "Milk", env=AS_ALICE).stdout.strip()
+
+    assert [rich(c)["markdown"] for c in tg.api.calls] == [f"Which?\n\n{FOOTER}", f"Shopping\n\n{FOOTER}"]
+    kept = tg.root / "state" / "asks" / BOB_CHAT
+    assert json.loads((kept / f"{asked}.json").read_text())["question"] == "Which?"
+    assert json.loads((kept / f"{listed}.json").read_text())["question"] == "Shopping"
+    assert stamps(tg) == [(int(asked), "alice"), (int(listed), "alice")]
+
+
+def test_an_edit_keeps_the_footer_only_on_a_message_its_sender_stamped(tg, people):
+    sent = tg("--chat", BOB_CHAT, "ask", "Which?", "Sushi", "Pizza", env=AS_ALICE).stdout.strip()
+
+    tg("--chat", BOB_CHAT, "edit", sent, "Which?\n\n✅ Sushi: telling Alice", env=AS_ALICE)
+    tg("--chat", BOB_CHAT, "edit", "42", "not one of Alice's", env=AS_ALICE)
+    tg("--chat", BOB_CHAT, "edit", sent, "the router's own words")
+
+    assert [rich(c)["markdown"] for c in tg.api.calls[1:]] == [
+        f"Which?\n\n✅ Sushi: telling Alice\n\n{FOOTER}", "not one of Alice's", "the router's own words"]
+
+
+def test_a_held_message_is_stamped_once_it_goes_out(tg, people):
+    offline = {**AS_ALICE, "TG_API_BASE": nowhere(), "TG_CONNECT_WITHIN": "1"}
+    assert tg("--chat", BOB_CHAT, "send", "while offline", env=offline, check=False).returncode == 75
+    assert stamps(tg) == []
+
+    tg("--chat", BOB_CHAT, "send", "back online", env=AS_ALICE)
+
+    assert rich(tg.api.calls[0])["markdown"].startswith(f"while offline\n\n{FOOTER}")
+    assert stamps(tg) == [(501, "alice"), (502, "alice")]

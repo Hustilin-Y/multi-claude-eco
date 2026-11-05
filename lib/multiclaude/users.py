@@ -68,6 +68,15 @@ def by_chat(chat):
         return None
 
 
+def chat_of(person):
+    """The chat id of person, a name in users.json; anything else, such as an id, as it is."""
+    try:
+        found = load_users().get(person)
+    except (OSError, ValueError):
+        found = None
+    return found.chat_id if found else person
+
+
 def local_time(chat, when):
     """The time when (a Unix time) as "09:18" in the timezone of the person whose chat this is,
     or as "06:18 UTC" when they have none."""

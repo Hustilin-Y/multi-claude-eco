@@ -405,7 +405,8 @@ class Tg:
     def __call__(self, *args, stdin="", env=None, check=True):
         r = subprocess.run([str(self.root / "bin" / "tg"), *args], input=stdin, capture_output=True, text=True,
                            timeout=30, env={**os.environ, "TELEGRAM_STATE_DIR": str(self.channel),
-                                            "TG_API_BASE": self.api.url, "TG_CHAT_ID": CHAT, **(env or {})})
+                                            "TG_API_BASE": self.api.url, "TG_CHAT_ID": CHAT, "ASSISTANT_USER": "",
+                                            **(env or {})})
         if check:
             assert r.returncode == 0, r.stderr
         return r

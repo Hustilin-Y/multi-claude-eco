@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """tg: Telegram for the per-user assistants. They don't host the Telegram plugin (the front
 desk session does), so they reply with this. It talks to the chat in $TG_CHAT_ID (set by
-run-user.sh) unless --chat is given. Texts and questions are Markdown (GitHub-flavored), sent
-as Telegram rich messages: real headings, lists, tables, code blocks and collapsible sections.
-Telegram doesn't copy code in a rich message on tap, so each --copy TEXT adds a 📋 button under
-the message that copies TEXT; code formatting alone adds none. A highlight is sent as bold:
-Telegram's dark theme makes highlights unreadable.
+run-user.sh) unless --chat names another, by its id or by a person's name in users.json. Texts and
+questions are Markdown (GitHub-flavored), sent as Telegram rich messages: real headings, lists,
+tables, code blocks and collapsible sections. Telegram doesn't copy code in a rich message on tap,
+so each --copy TEXT adds a 📋 button under the message that copies TEXT; code formatting alone adds
+none. A highlight is sent as bold: Telegram's dark theme makes highlights unreadable.
+
+What an assistant ($ASSISTANT_USER) sends into another person's chat is stamped with its person's
+name and ends with a footer saying whose it is: that person's answer goes to this assistant, not
+to their own (crosschat.py).
 
   tg send [--reply-to ID] [--file PATH]... [--copy TEXT]... [--separate] [--sound] [TEXT]
                                                     TEXT from stdin if omitted; files go below it,
@@ -18,7 +22,8 @@ Telegram's dark theme makes highlights unreadable.
                                                     or unticks ☐ (the router does it); prints message_id
   tg checked MESSAGE_ID                             a checklist's items as "- [x] item" / "- [ ] item"
   tg edit MESSAGE_ID [--copy TEXT]... TEXT          edit a message sent earlier (no push notification);
-                                                    its copy buttons are replaced by these
+                                                    its copy buttons are replaced by these, and a
+                                                    message it stamped keeps its footer
   tg react MESSAGE_ID EMOJI                         Telegram's fixed emoji whitelist only
   tg typing                                         show "typing…" for ~5 seconds
   tg download FILE_ID [DIR]                         save an attachment; prints the path
@@ -34,7 +39,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 
-from multiclaude import addons, jsonfile, paths, questions  # noqa: E402
+from multiclaude import addons, crosschat, jsonfile, paths, questions, users  # noqa: E402
 from multiclaude.telegram import (COPY_BUTTONS_MAX, COPY_TEXT_MAX, RICH_LIMIT, BotApi, ChatHistory,  # noqa: E402
                                   TelegramError, copy_buttons, send_or_hold, split_text, without_highlights)
 
@@ -51,8 +56,9 @@ class Usage(Exception):
 
 
 class Tg:
-    def __init__(self, chat):
+    def __init__(self, chat, writer=None):
         self.chat = chat
+        self.writer = writer  # whose assistant sends, when chat is another person's (crosschat.writer_into)
         self.api = BotApi(timeout=API_TIMEOUT)
         self.held = 0  # messages held because Telegram couldn't be reached
         self.sound = False  # notify even in the person's quiet hours (tg send --sound)
@@ -61,9 +67,18 @@ class Tg:
         if not self.chat:
             raise TelegramError("no chat: set TG_CHAT_ID or pass --chat ID")
 
+    @property
+    def by(self):
+        """The name a message sent into another person's chat is stamped with, else None."""
+        return self.writer.name if self.writer else None
+
+    def signed(self, markdown):
+        """markdown, ending with the footer saying whose assistant sent it when the chat is another person's."""
+        return crosschat.with_footer(markdown, self.writer.display) if self.writer else markdown
+
     def sent(self, result):
-        """Record a sent message for /clear and print its id."""
-        ChatHistory(self.chat).remember(result["message_id"])
+        """Record a sent message for /clear, with its stamp, and print its id."""
+        ChatHistory(self.chat).remember(result["message_id"], by=self.by)
         print(result["message_id"], flush=True)
 
     def posted(self, result):
@@ -88,6 +103,7 @@ class Tg:
         if not text.strip() and not files:
             return
         chunks = split_text(text) or [""]
+        chunks[-1] = self.signed(chunks[-1])
         for chunk in chunks[:-1]:
             self.send_rich(chunk, reply_to=reply_to)
             reply_to = None
@@ -101,7 +117,7 @@ class Tg:
         disable_notification wins over quiet hours, so --sound asks for a notification outright."""
         if self.sound:
             params["disable_notification"] = False
-        self.posted(send_or_hold(self.api, method, files=files, chat_id=self.chat, **params))
+        self.posted(send_or_hold(self.api, method, files=files, by=self.by, chat_id=self.chat, **params))
 
     def send_rich(self, markdown, files=(), reply_to=None, copy=()):
         """One rich message: the Markdown, then each file as a media block below it."""
@@ -137,7 +153,7 @@ class Tg:
         if len(question) > RICH_LIMIT:
             raise TelegramError("tg ask: the question is too long; send the details first with tg send")
         self.need_chat()
-        result = self.api.call("sendRichMessage", chat_id=self.chat, rich_message={"markdown": question},
+        result = self.api.call("sendRichMessage", chat_id=self.chat, rich_message={"markdown": self.signed(question)},
                                reply_markup=questions.option_buttons(options))
         self.sent(result)
         self.save_question(result["message_id"], question, options)
@@ -159,7 +175,7 @@ class Tg:
         if len(title) > RICH_LIMIT:
             raise TelegramError("tg checklist: the title is too long; send the details first with tg send")
         self.need_chat()
-        result = self.api.call("sendRichMessage", chat_id=self.chat, rich_message={"markdown": title},
+        result = self.api.call("sendRichMessage", chat_id=self.chat, rich_message={"markdown": self.signed(title)},
                                reply_markup=questions.checklist_buttons(items, set()))
         self.sent(result)
         questions.save(paths.ASKS / str(self.chat), result["message_id"], title, items,
@@ -184,6 +200,8 @@ class Tg:
             raise Usage("tg edit MESSAGE_ID [--copy TEXT]... TEXT")
         self.need_chat()
         markdown = without_highlights(" ".join(args))
+        if self.by and ChatHistory(self.chat).sent_by(message_id[0]) == self.by:
+            markdown = self.signed(markdown)
         self.api.call("editMessageText", chat_id=self.chat, message_id=message_id[0],
                       rich_message={"markdown": markdown}, reply_markup=copy_buttons(copy))
 
@@ -267,12 +285,12 @@ def usage(available):
 def main(args):
     chat = os.environ.get("TG_CHAT_ID", "")
     if args[:1] == ["--chat"] and len(args) > 1:
-        chat, args = args[1], args[2:]
+        chat, args = users.chat_of(args[1]), args[2:]
     available = commands()
     if not args or args[0] not in available:
         print(usage(available))
         return 2
-    tg = Tg(chat)
+    tg = Tg(chat, crosschat.writer_into(chat, os.environ.get("ASSISTANT_USER")))
     try:
         available[args[0]](tg, args[1:])
     except (Usage, ValueError) as e:

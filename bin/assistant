@@ -286,7 +286,7 @@ cmd_pair() {
       '- `/mcp`: your own MCP servers' \
       '- `/config`: the control panel, for your settings and scheduled jobs' \
       '- `/help`: what you can send me, and what I can do with your MCP servers' \
-      | TG_CHAT_ID="$sender" "$ROOT/bin/tg" send >/dev/null
+      | TG_CHAT_ID="$sender" ASSISTANT_USER='' "$ROOT/bin/tg" send >/dev/null
   elif [ -z "$(jq -r --arg id "$sender" 'to_entries[] | select(.value.telegram_id == $id) | .key' "$USERS")" ]; then
     echo "Note: $sender has no assistant yet, so their messages go nowhere. Run: assistant add-user <name> $sender"
   fi
@@ -711,9 +711,10 @@ cmd_notify() {
   [ -n "$id" ] || die "unknown user '$user' (see $USERS)"
   if [ $# -gt 0 ]; then text="$*"; else text=$(cat); fi
   [ -n "$text" ] || return 0
-  # tg splits long text and records the messages, so the user's /clear deletes them.
+  # tg splits long text and records the messages, so the user's /clear deletes them. Jobs, alerts
+  # and scripts speak as the bot, so nothing is stamped as one assistant's even when one runs it.
   local rc=0
-  printf '%s' "$text" | "$ROOT/bin/tg" --chat "$id" send >/dev/null || rc=$?
+  printf '%s' "$text" | ASSISTANT_USER='' "$ROOT/bin/tg" --chat "$id" send >/dev/null || rc=$?
   [ "$rc" = 0 ] || [ "$rc" = "$TG_HELD" ] || die "sending to $user ($id) failed"
 }
 

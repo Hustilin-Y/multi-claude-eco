@@ -1,7 +1,9 @@
-"""The router's loop: each message goes to its person's assistant or is one of the bot's commands,
-and every session is tended. It never waits on a terminal or the network: each session's queue
-has its own thread (work.Worker), and replies go out in the background. It only sends to the Bot
-API, so it never competes with the Telegram plugin for getUpdates."""
+"""The router's loop: each message goes to its person's assistant, or to another person's whose
+message in their chat it answers, or is one of the bot's commands, and every session is tended.
+It never waits on a terminal or the network: each session's queue has its own thread
+(work.Worker), and replies go out in the background. It only sends to the Bot API, so it never
+competes with the Telegram plugin for getUpdates."""
+import dataclasses
 import os
 import threading
 import time
@@ -30,6 +32,8 @@ OFFSETS_HEARTBEAT = 60    # saved at least this often, so a restart can tell how
 RESUME_WITHIN = 60 * 60   # after a longer outage, messages from the gap are skipped rather than delivered late
 SEEN_KEPT = 200           # recently routed messages remembered, to route each one once
 SEND_HELD_EVERY = 30      # how often to look for held messages (telegram.OUTBOX) while the network is up
+# People rarely use Telegram's replies, so a plain message this soon after a stamped one answers it.
+FOLLOWS_WITHIN = 30 * 60
 
 
 def survive(what, fn, *args):
@@ -238,17 +242,31 @@ class Desk:
             return
         user, now = self.users[name], time.time()
         user.reply_to = TelegramChat(user.chat_id)
+        writer, msg = self.writer_of(user, msg, now)
         if msg.tap:
-            asks.answer(user, msg, now)
+            asks.answer(user, msg, now, to=writer)
             return
         if msg.reaction:  # never a command, and its msg_id is the message reacted to, recorded already
-            self.deliver(user, msg, now)
+            self.deliver(user, msg, now, to=writer)
             return
         if str(msg.msg_id).isdigit():
             telegram.ChatHistory(msg.chat).remember(msg.msg_id)
-        self.dispatch(user, msg, now)
+        self.dispatch(user, msg, now, to=writer)
 
-    def dispatch(self, user, msg, now):
+    def writer_of(self, user, msg, now):
+        """(the session of the other person whose assistant sent the message msg answers in user's
+        chat, msg marked as answering it); (None, msg) when it answers no other registered
+        person's assistant. Commands stay user's own all the same (dispatch)."""
+        history = telegram.ChatHistory(user.chat_id)
+        answered_id, only_next = answered(msg, history, now)
+        stamp = history.stamped(answered_id) if answered_id else None
+        writer = self.users.get(stamp.by) if stamp else None
+        if writer is None or writer is user:
+            return None, msg
+        via = messages.Via(user.display, writer.display, stamp.answers or str(answered_id), only_next)
+        return writer, dataclasses.replace(msg, via=via)
+
+    def dispatch(self, user, msg, now, to=None):
         text = messages.in_latin_layout(msg.text.strip())
         waiting = user.pending_login  # read once: the login thread clears it when it ends
         redirect = messages.REDIRECT_RE.search(text) if waiting else None
@@ -281,7 +299,7 @@ class Desk:
         elif switch := messages.parse_switch(text):
             self.switch(user, *switch, now)
         else:
-            self.deliver(user, msg, now)
+            self.deliver(user, msg, now, to)
 
     def stop(self, user):
         """/stop: its worker presses Escape (work.stop), what its assistant runs in the background
@@ -340,13 +358,17 @@ class Desk:
             telegram.later(user.say, f"⏳ I'll switch your {setting} to {target} once I finish what I'm doing.")
         user.enqueue(work.Switch(now, setting, target, keep))
 
-    def deliver(self, user, msg, now):
-        """Queue a message for the assistant, unless an add-in queues it its own way (on_message)."""
-        user.pickups.cancel()  # with a new message the assistant carries on anyway, its last turn in view
-        if not any(addons.call("on_message", user, msg, now)):
-            user.queue_message(work.Deliver(now, *messages.typed(user.display, msg), msg.msg_id), now)
+    def deliver(self, user, msg, now, to=None):
+        """Queue user's message for an assistant, unless an add-in queues it its own way
+        (on_message): to, another person's whose message it answers (writer_of), or user's own."""
+        to = to or user
+        to.pickups.cancel()  # with a new message the assistant carries on anyway, its last turn in view
+        if msg.via and not msg.reaction:
+            telegram.ChatHistory(msg.chat).pass_on(msg.msg_id, to.name, msg.via.msg_id)  # what user sends next follows it
+        if not any(addons.call("on_message", to, msg, now)):
+            to.queue_message(work.Deliver(now, *messages.typed(to.display, msg), msg.msg_id), now)
         what = "reaction on message" if msg.reaction else "message"
-        log(f"{user.name}: {what} {msg.msg_id} queued for delivery")
+        log(f"{to.name}: {what} {msg.msg_id}{'' if to is user else f' from {user.name}'} queued for delivery")
         # In the background, and so that a failing check can never cost the message itself.
         in_background(survive, f"{user.name}'s plan limit check", self.limits.warn, user)
 
@@ -406,6 +428,21 @@ class Desk:
             log(f"can't save {DESK_OFFSETS}: {e}")
             return
         self.offsets_saved = (dict(self.desk.tail.offsets), now)
+
+
+def answered(msg, history, now):
+    """(id, whether only by coming next) of the message in its chat that msg answers: a tapped
+    question, a message reacted or replied to, or for a plain message the one right before it,
+    while that is stamped (telegram.ChatHistory) and young. (None, False) when it answers none."""
+    if msg.tap or msg.reaction:
+        return msg.msg_id, False
+    if replied := msg.attrs.get("reply_to_message_id"):
+        return replied, False
+    before = history.latest_before(msg.msg_id)
+    stamp = history.stamped(before) if before else None
+    if stamp and now - stamp.at < FOLLOWS_WITHIN:
+        return before, True
+    return None, False
 
 
 def relay_handlers():

@@ -3,7 +3,7 @@ import time
 
 import pytest
 
-from conftest import ALICE_CHAT, REPO, channel, sent, shown
+from conftest import ALICE_CHAT, BOB_CHAT, REPO, channel, sent, shown
 
 VOICE_NOTE = {"attachment_kind": "voice", "attachment_file_id": "VOICE1", "attachment_mime": "audio/ogg"}
 
@@ -53,6 +53,26 @@ def test_a_voice_note_is_typed_as_its_transcript_and_shown_in_the_chat(r, desk, 
     assert (method, shown(params), params["disable_notification"]) == ("sendRichMessage", "🎙️ words of VOICE1", True)
     assert params["reply_parameters"]["message_id"] == 5
     assert alice.queue == []
+
+
+def test_a_voice_note_answering_another_persons_assistant_goes_to_it_and_so_does_what_follows(r, desk, notes,
+                                                                                               monkeypatch):
+    alice, bob = desk.users["alice"], desk.users["bob"]
+    r.telegram.ChatHistory(BOB_CHAT).remember(812, by="alice")  # as tg records a message Alice's assistant sent Bob
+    hears(notes, monkeypatch)
+    typed = typed_into(alice, monkeypatch)
+
+    desk.inbound(channel("(voice message)", chat=BOB_CHAT, msg_id="815", **VOICE_NOTE))
+    alice.queue[0].run(alice, time.time())
+    desk.inbound(channel("and a coke", chat=BOB_CHAT, msg_id="917"))
+
+    ((header, body),) = typed
+    assert header.startswith("[Telegram from Bob · voice note · msg 815 in Bob's chat, after your msg 812 · ")
+    assert "Bob isn't your person" in header and "my own request" not in header
+    assert body.startswith("words of VOICE1\n\nAttachments:") and body.endswith("tell Alice what came back with tg send.")
+    assert sent(r, BOB_CHAT) == ["🎙️ words of VOICE1"] and bob.queue == []
+    (follow_up,) = alice.queue
+    assert follow_up.header.startswith("[Telegram from Bob · msg 917 in Bob's chat, after your msg 812 · ")
 
 
 def test_a_voice_note_that_cant_be_transcribed_goes_in_as_audio(r, desk, notes, monkeypatch):

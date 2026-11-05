@@ -78,6 +78,50 @@ def test_chat_history_keeps_what_it_is_told_to_keep_with_its_time(lib):
     assert [int(line.split()[0]) for line in history.path.read_text().splitlines()] == [3, 4]
 
 
+def test_a_stamp_says_whose_assistant_a_message_is_with(lib):
+    from multiclaude import telegram
+    history = telegram.ChatHistory("101")
+    history.remember(812, by="alice")
+    history.remember(813)
+    history.pass_on(815, "alice", "812")
+
+    assert [history.sent_by(n) for n in (812, 813, 815, "812")] == ["alice", None, "alice", "alice"]
+    assert history.stamped(812).answers is None and history.stamped(815).answers == "812"
+    assert time.time() - history.stamped(812).at < 5
+
+
+def test_stamps_older_than_a_month_are_dropped_as_new_ones_come(lib):
+    from multiclaude import telegram
+    history = telegram.ChatHistory("101")
+    telegram.MESSAGES.mkdir(parents=True)
+    history.stamps.write_text(f"1 {int(time.time()) - telegram.STAMPED_FOR - 60} alice\nnot a stamp\n"
+                              f"2 {int(time.time()) - 60} alice\n")
+
+    history.remember(3, by="bob")
+
+    assert [line.split()[0] for line in history.stamps.read_text().splitlines()] == ["2", "3"]
+    assert history.sent_by(1) is None
+
+
+def test_clear_leaves_the_stamps_be(lib):
+    from multiclaude import telegram
+    history = telegram.ChatHistory("101")
+    history.remember(812, by="alice")
+
+    assert history.take_deletable() == [812]
+    assert history.path.read_text() == "" and history.sent_by(812) == "alice"
+
+
+def test_latest_before_is_the_newest_message_recorded_before_one(lib):
+    from multiclaude import telegram
+    history = telegram.ChatHistory("101")
+    assert history.latest_before(815) is None
+    for message_id in (810, 812, 816):
+        history.remember(message_id)
+
+    assert [history.latest_before(n) for n in (815, "817", 810, "x")] == [812, 816, None, None]
+
+
 def test_split_text(lib):
     from multiclaude.telegram import split_text
     assert split_text("") == []
@@ -214,6 +258,17 @@ def test_held_messages_go_out_in_order_with_their_files_and_say_when_they_were_w
     assert json.loads(prompt["rich_message"]) == {"blocks": [{"type": "paragraph", "text": ["now"]}]}
     assert not outbox.waiting() and list(outbox.dir.iterdir()) == []
     assert telegram.ChatHistory("100").take_deletable() == [501, 502]
+
+
+def test_a_held_message_is_stamped_once_it_goes_out(outbox, bot_api):
+    from multiclaude import telegram
+    outbox.hold("sendRichMessage", {"chat_id": "100", "rich_message": {"markdown": "from Bob's assistant"}}, by="bob")
+    outbox.hold("sendRichMessage", {"chat_id": "100", "rich_message": {"markdown": "the router's"}})
+
+    assert outbox.flush(telegram.BotApi(base=bot_api.url)) is True
+
+    history = telegram.ChatHistory("100")
+    assert (history.sent_by(501), history.sent_by(502)) == ("bob", None)
 
 
 def test_a_held_message_refused_or_held_too_long_is_dropped(outbox, bot_api):

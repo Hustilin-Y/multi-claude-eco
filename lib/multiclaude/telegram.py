@@ -15,6 +15,7 @@ import time
 import urllib.parse
 import uuid
 from pathlib import Path
+from typing import NamedTuple
 
 from multiclaude import addons, jsonfile, paths, users
 from multiclaude.log import log
@@ -36,6 +37,8 @@ REUSE_WITHIN = 30         # don't reuse a connection idle longer than this; the 
 # recorded ids, for messages the router never saw.
 MESSAGES = paths.STATE / "messages"
 DELETABLE_FOR = 48 * 3600 - 600  # bots can only delete messages less than 48 hours old
+# /clear leaves <chat>.by be, so an answer to an older message still finds its writer.
+STAMPED_FOR = 30 * 86400
 # The router's own texts are plain text that put commands, paths and names in backticks;
 # rich_blocks() shows those as code.
 CODE_SPAN_RE = re.compile(r"`([^`\n]+)`")
@@ -282,21 +285,80 @@ def split_text(text, limit=RICH_LIMIT):
     return chunks + ([text] if text else [])
 
 
+class Stamp(NamedTuple):
+    by: str               # the person whose assistant sent the message, or got it passed on
+    at: float             # when it was stamped
+    answers: str | None = None  # for a message passed on, the id of by's message it answers
+
+
 class ChatHistory:
-    """The recorded messages of one chat (see MESSAGES). tg, the router and `assistant notify`
-    record what they send; the router records inbound messages and wipes them on /clear."""
+    """The recorded messages of one chat (see MESSAGES), and the stamps on those another person's
+    assistant sent (see STAMPED_FOR). tg, the router and `assistant notify` record what they send;
+    the router records inbound messages and wipes them on /clear."""
 
     def __init__(self, chat):
         self.path = MESSAGES / str(chat)
+        self.stamps = MESSAGES / f"{chat}.by"
         self.lock = MESSAGES / f"{chat}.lock"
 
-    def remember(self, message_id):
+    def remember(self, message_id, by=None):
+        """Record a message; by: the person whose assistant sent it, when this isn't their chat."""
         try:
             with jsonfile.locked(self.lock):
                 with open(self.path, "a") as f:
                     f.write(f"{message_id} {int(time.time())}\n")
+                if by:
+                    self._stamp(message_id, by)
         except OSError as e:
             log(f"can't record message {message_id} in {self.path}: {e}")
+
+    def pass_on(self, message_id, to, answers):
+        """Stamp the chat's person's own message, recorded already, as passed on to the assistant
+        of to, as an answer to its message answers."""
+        try:
+            with jsonfile.locked(self.lock):
+                self._stamp(message_id, to, answers)
+        except OSError as e:
+            log(f"can't stamp message {message_id} in {self.stamps}: {e}")
+
+    def _stamp(self, message_id, by, answers=None):
+        now = time.time()
+        kept = [line for line in self._stamp_lines() if (found := stamp_in(line)) and now - found[1].at < STAMPED_FOR]
+        added = " ".join(str(word) for word in (message_id, int(now), by, answers) if word is not None)
+        jsonfile.write_atomically(self.stamps, "".join(f"{line}\n" for line in kept + [added]))
+
+    def _stamp_lines(self):
+        try:
+            return self.stamps.read_text().splitlines()
+        except FileNotFoundError:
+            return []
+
+    def stamped(self, message_id):
+        """The message's Stamp, or None if it has none."""
+        try:
+            lines = self._stamp_lines()
+        except OSError:
+            return None
+        for stamped_id, stamp in reversed([found for found in map(stamp_in, lines) if found]):
+            if stamped_id == str(message_id):
+                return stamp
+        return None
+
+    def sent_by(self, message_id):
+        """The person whose assistant sent the message, or got it passed on; None if it isn't stamped."""
+        stamp = self.stamped(message_id)
+        return stamp.by if stamp else None
+
+    def latest_before(self, message_id):
+        """The id of the newest message recorded before message_id (ids grow with time within a
+        chat), or None."""
+        if not str(message_id).isdigit():
+            return None
+        try:
+            ids = [recorded_id(line) for line in self.path.read_text().splitlines()]
+        except OSError:
+            return None
+        return max((i for i in ids if i is not None and i < int(message_id)), default=None)
 
     def take_deletable(self, keep=()):
         """Forget the recorded messages and return the ids still young enough to delete. The ids
@@ -322,6 +384,20 @@ class ChatHistory:
         return ids
 
 
+def recorded_id(line):
+    """The message id a line of a chat's record starts with, or None."""
+    first = line.split()[:1]
+    return int(first[0]) if first and first[0].isdigit() else None
+
+
+def stamp_in(line):
+    """(message id, Stamp) from a line of a chat's stamps, or None for a line that isn't one."""
+    parts = line.split()
+    if len(parts) not in (3, 4) or not parts[1].isdigit():
+        return None
+    return parts[0], Stamp(parts[2], float(parts[1]), *parts[3:])
+
+
 class Outbox:
     """The held messages of one chat (see OUTBOX). tg and the router hold a message here when
     Telegram can't be reached, and send what's held before anything new to the chat."""
@@ -339,8 +415,9 @@ class Outbox:
     def waiting(self):
         return any(self.dir.glob("*.json"))
 
-    def hold(self, method, params, files=None):
-        """Keep a message to send later. Its files are copied, since the sender may delete them."""
+    def hold(self, method, params, files=None, by=None):
+        """Keep a message to send later. Its files are copied, since the sender may delete them;
+        by is the stamp it gets once sent (ChatHistory.remember)."""
         name = f"{time.time_ns()}-{os.getpid()}"
         kept = {}
         with jsonfile.locked(self.lock):
@@ -350,7 +427,8 @@ class Outbox:
                 shutil.copyfile(path, copy)
                 kept[field] = str(copy)
             jsonfile.write_json(self.dir / f"{name}.json",
-                                {"method": method, "params": params, "files": kept, "held": time.time()})
+                                {"method": method, "params": params, "files": kept, "held": time.time(),
+                                 **({"by": by} if by else {})})
 
     def flush(self, api):
         """Send the held messages in order. True once none is left; False if the rest has to
@@ -375,13 +453,13 @@ class Outbox:
         return True
 
     def send_held(self, api, held):
-        """Send a held message, recording it for /clear, unless it was held too long."""
+        """Send a held message, recording it for /clear with its stamp, unless it was held too long."""
         if time.time() - held.get("held", 0) > HELD_FOR:
             log(f"chat {self.chat}: dropping a message held for over {HELD_FOR // 3600} hours")
             return
         result = api.call(held["method"], files=held["files"] or None, **with_held_note(held))
         if isinstance(result, dict) and result.get("message_id"):
-            ChatHistory(self.chat).remember(result["message_id"])
+            ChatHistory(self.chat).remember(result["message_id"], by=held.get("by"))
 
 
 def with_held_note(held):
@@ -399,18 +477,18 @@ def with_held_note(held):
     return {**params, "rich_message": rich}
 
 
-def send_or_hold(api, method, files=None, **params):
+def send_or_hold(api, method, files=None, by=None, **params):
     """BotApi.call with api for a method that posts a message, after anything held for its chat.
-    If Telegram can't be reached, the message is held instead (see OUTBOX). The sent message, or
-    None if it was held; TelegramError if Telegram refused it."""
+    If Telegram can't be reached, the message is held instead (see OUTBOX), with by, the stamp it
+    gets once sent. The sent message, or None if it was held; TelegramError if Telegram refused it."""
     box = Outbox(params["chat_id"])
     if box.waiting() and not box.flush(api):
-        box.hold(method, params, files)
+        box.hold(method, params, files, by)
         return None
     try:
         return api.call(method, files=files, **params)
     except Unreachable:
-        box.hold(method, params, files)
+        box.hold(method, params, files, by)
         return None
 
 

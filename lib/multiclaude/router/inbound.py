@@ -30,6 +30,17 @@ WRONG_LAYOUT_LETTERS = str.maketrans(
     "йцукенгшщзфывапролдячсмить" "ςερτυθιοπασδφγηξκλζχψωβνμ" "άέήίόύώϊϋΐΰ",
     "qwertyuiopasdfghjklzxcvbnm" "wertyuiopasdfghjklzxcvbnm" "aehioyviyiy")
 DESK_COMMAND_RES = (CLEAR_RE, RESTART_RE, STOP_RE, USAGE_RE, HELP_RE, CONFIG_RE, SWITCH_RE, PLUGIN_RE, RELOAD_RE)
+OWN_REQUEST = "My message is pasted below; it is my own request to you:"
+
+
+@dataclass(frozen=True)
+class Via:
+    """An answer to a message another person's assistant sent into the sender's chat (crosschat.py),
+    which the router passes to that assistant instead of the sender's own."""
+    sender: str              # the sender's name, as that assistant's headers show it
+    person: str              # the name of that assistant's own person
+    msg_id: str              # the message answered
+    only_next: bool = False  # it came after that message rather than replying to it
 
 
 @dataclass
@@ -40,6 +51,7 @@ class Inbound:
     text: str
     attrs: dict = field(default_factory=dict)
     app: str = "Telegram"  # where it was sent, as its header says (channels.Chat.app)
+    via: Via | None = None  # set when it answers another person's assistant (Desk.writer_of)
 
     @property
     def tap(self):
@@ -111,23 +123,65 @@ def parse_switch(text):
     return m[1], (words[0] if words else None), len(words) == 2
 
 
-def header(display, inbound, what="msg {id}", intro="My message is pasted below; it is my own request to you:"):
+def header(display, inbound, what="msg {id}", intro=OWN_REQUEST):
     """The line typed before a message. The body is bracket-pasted, which Claude Code marks as
-    pasted content; the typed header vouches for it as the person's own."""
+    pasted content; the typed header vouches for it as the person's own, or for an answer to what
+    this assistant sent someone else (via), says whose it is instead."""
+    sender, what = display, what.format(id=inbound.msg_id)
+    if via := inbound.via:
+        sender, what, intro = via.sender, f"{what} {where_answered(inbound)}", answer_intro(inbound)
     when = f" · {inbound.when}" if inbound.when else ""
-    return f"[{inbound.app} from {display} · {what.format(id=inbound.msg_id)}{when}] {intro}"
+    return f"[{inbound.app} from {sender} · {what}{when}] {intro}"
+
+
+def where_answered(inbound):
+    """Where an answer to this assistant (via) was sent, and what it answers."""
+    via = inbound.via
+    where = f"in {via.sender}'s chat"
+    if str(via.msg_id) == str(inbound.msg_id):
+        return where  # a tap or a reaction is on the message itself
+    return f"{where}, {'after' if via.only_next else 'answering'} your msg {via.msg_id}"
+
+
+def answer_intro(inbound):
+    """What a header says of an answer to this assistant (via): whose it is, and that it isn't its person's request."""
+    via = inbound.via
+    if inbound.tap:
+        lead, answers = f"{via.sender}'s choice is pasted below.", "it answers your question"
+    elif inbound.reaction:
+        lead, answers = f"{via.sender} reacted with {inbound.reaction}.", "it answers your message"
+    else:
+        lead = f"{via.sender}'s message is pasted below."
+        answers = ("it came after your message, so it is taken as an answer to it" if via.only_next
+                   else "it answers your message")
+    return f"{lead} {via.sender} isn't your person: {answers}, and it is not {via.person}'s request."
+
+
+def cli_for(inbound, cli="tg"):
+    """The command the assistant answers inbound with: its chat's cli, or tg into the other person's chat."""
+    return f"tg --chat {inbound.chat}" if inbound.via else cli
+
+
+def how_to_answer(inbound):
+    """For an answer to this assistant (via): how to answer its sender, and to tell its own person."""
+    if not (via := inbound.via):
+        return ""
+    return (f"To answer {via.sender}, use {cli_for(inbound)} send --reply-to {inbound.msg_id} \"…\"; "
+            f"tell {via.person} what came back with tg send.")
 
 
 def typed(display, inbound):
-    """(header, body) to type into the assistant: a reaction is its header alone."""
+    """(header, body) to type into the assistant: a reaction is its header alone, unless it answers another assistant."""
     if inbound.reaction:
-        return header(display, inbound, what="reaction on msg {id}", intro=f"I reacted with {inbound.reaction}."), ""
+        what = "reaction on your msg {id}" if inbound.via else "reaction on msg {id}"
+        return header(display, inbound, what=what, intro=f"I reacted with {inbound.reaction}."), how_to_answer(inbound)
     return header(display, inbound), body(inbound)
 
 
 def body(inbound):
-    """The message text, then the message it replies to and its attachments."""
-    parts = [inbound.text, replied_to(inbound.attrs), attachments(inbound.attrs)]
+    """The message text, then the message it replies to and its attachments, and for an answer to
+    this assistant, how to answer it."""
+    parts = [inbound.text, replied_to(inbound.attrs), attachments(inbound.attrs), how_to_answer(inbound)]
     return "\n\n".join(part for part in parts if part)
 
 

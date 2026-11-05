@@ -134,9 +134,13 @@ def fetch_from_telegram(file_id, folder):
 
 
 def show_on_telegram(inbound, text):
-    """A reply to the note."""
-    telegram.send(inbound.chat, text, disable_notification=True,
-                  reply_parameters={"message_id": int(inbound.msg_id), "allow_sending_without_reply": True})
+    """A reply to the note, with the note's stamp, so what follows a note passed on to another
+    person's assistant goes there too (router/desk.py, answered)."""
+    shown = telegram.send(inbound.chat, text, disable_notification=True,
+                          reply_parameters={"message_id": int(inbound.msg_id), "allow_sending_without_reply": True})
+    history = telegram.ChatHistory(inbound.chat)
+    if shown and (stamp := history.stamped(inbound.msg_id)):
+        history.pass_on(shown["message_id"], stamp.by, stamp.answers)
 
 
 TELEGRAM = Source("voice notes (I transcribe them)", telegram_note, fetch_from_telegram, show_on_telegram)

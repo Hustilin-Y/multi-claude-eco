@@ -10,7 +10,7 @@ import time
 
 import pytest
 
-from conftest import ALICE_CHAT, BIN, FakeClaude, FakeProc
+from conftest import ALICE_CHAT, BIN, BOB_CHAT, FakeClaude, FakeProc
 
 
 class Home:
@@ -141,6 +141,16 @@ def test_notify_fails_when_telegram_does(home):
     home.api.fail["sendRichMessage"] = "Bad Request: chat not found"
     r = home.run("notify", "hello")
     assert r.returncode != 0 and "failed" in r.stderr
+
+
+def test_notify_speaks_as_the_bot_even_when_an_assistant_runs_it(home):
+    users = json.loads((home.root / "users.json").read_text())
+    (home.root / "users.json").write_text(json.dumps({**users, "bob": {"telegram_id": BOB_CHAT, "display": "Bob"}}))
+
+    assert home.run("notify", "--user", "bob", "hello", env={"ASSISTANT_USER": "alice"}).returncode == 0
+
+    assert home.sent() == ["hello"]
+    assert not (home.root / "state" / "messages" / f"{BOB_CHAT}.by").exists()
 
 
 def test_a_job_sends_its_answer_and_records_its_cost(home):
