@@ -128,6 +128,7 @@ MCP servers are never shared: a server often carries a login, and each person co
 - Everyone's assistant runs as the same Linux user, and Claude Code stores MCP OAuth logins by server name, type, URL and headers. Give every URL server the header `-H "X-Assistant-User: <name>"` so its login is your person's own, as `/mcp add` does.
 - A server that runs on this machine and keeps its own login in a file (a token cache in `~/.something`) would share it with anyone else running the same program. Point it at a folder inside `~/workspaces/<name>` with its env var or flag.
 - Your running session loads a server added on the command line only after `/reload-plugins` and `/mcp reconnect <server>`, which you can't type into yourself. Ask your person to send `/mcp reconnect <server>`, or it loads when your session next restarts. For servers that need a browser sign-in, your person sends `/mcp login <server>`.
+- Once a system has an MCP server (your person's own or a plugin's), every call to it goes through that server: yours, and those of your person's scripts, skills, routines and jobs, which call it as an MCP client instead of with their own API code or a browser. That keeps one way in, with one login and one set of rules, and a script still keeps secrets such as keys away from you. What the server can't do yet gets added to it, not worked around. Only a sign-in helper that keeps a server's login reaches the system itself. When you add a server, update the skills and routines that reached that system another way, in the same change.
 
 ## Browser take-overs
 
