@@ -1581,6 +1581,24 @@ def test_a_dialog_beside_the_diff_of_changed_files_is_read(r):
     assert dialog.options == ((True, "Yes"), (False, "No"))
 
 
+def in_a_named_session(screen):
+    """screen as Claude Code shows it in a session with a name: the rule below the dialog runs
+    across the whole screen and carries the name."""
+    width = max(map(len, screen.splitlines()))
+    name = " demo ─"
+    return screen.rstrip("\n") + "\n" + "─" * (width - len(name)) + name
+
+
+def test_a_dialog_beside_the_diff_is_read_in_a_named_session(r):
+    # The named rule, as wide as the screen, was taken for where the diff began, so the diff was
+    # never cut off and two approvals didn't reach the person (7 Nov 2026).
+    screen = captured("approval-dialog-diff-panel.txt")
+    named = in_a_named_session(screen)
+
+    assert r.claude_ui.approval_dialog(named) == r.claude_ui.approval_dialog(screen)
+    assert not r.claude_ui.message_box_shown(named)
+
+
 @pytest.mark.parametrize("name, shown", [
     ("message-box-empty.txt", True), ("message-put-back.txt", True), ("message-box-diff-panel.txt", True),
     ("approval-dialog.txt", False), ("approval-dialog-diff-panel.txt", False), (BORDERLESS, False)])

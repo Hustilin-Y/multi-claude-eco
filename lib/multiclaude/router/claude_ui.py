@@ -88,8 +88,9 @@ PANEL_MIN_COLUMN = 40     # nearer the left, a │ belongs to what's on screen, 
 PANEL_MIN_SHARE = 0.5     # of the lines wide enough to reach the border's column
 WIDE_CHAR_SLACK = 8       # an emoji is one character but two columns: the border moves left
 # Once files have changed, the panel shows their diff and has no border: a dialog's rules then
-# stop short of it, and the diff runs on beside every line of the dialog.
-MAIN_RULE_RE = re.compile(r"^([─╌]{20,})")
+# stop short of it, and the diff runs on beside every line of the dialog. In a named session, the
+# rule below a dialog runs across the whole screen with the name in it ("───── alex ─").
+MAIN_RULE_RE = re.compile(r"^([─╌]{20,}(?: \S+ [─╌]{1,4}$)?)")
 
 
 @dataclass(frozen=True)
@@ -136,13 +137,10 @@ def cut_at_border(line, border):
 
 
 def borderless_panel_edge(lines):
-    """Where a panel without a border starts, or None: the column the rules starting the
-    screen's lines stop at, when text runs on past it."""
-    widths = [len(m[1]) for line in lines if (m := MAIN_RULE_RE.match(line))]
-    if not widths:
-        return None
-    edge = max(widths)
-    return edge if any(line[edge:].strip() for line in lines) else None
+    """Where a panel without a border starts, or None: the column where the widest rule starting
+    a line stops while text runs on past it."""
+    widths = {len(m[1]) for line in lines if (m := MAIN_RULE_RE.match(line))}
+    return max((width for width in widths if any(line[width:].strip() for line in lines)), default=None)
 
 
 def approval_dialog(screen):
