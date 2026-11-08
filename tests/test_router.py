@@ -746,6 +746,35 @@ def test_serve_reports_session_command_results(r, desk, monkeypatch):
     assert keyboard == {"inline_keyboard": [[{"text": "📋 /mcp login srv", "copy_text": {"text": "/mcp login srv"}}]]}
 
 
+def test_a_reconnect_tells_the_assistant_so_it_carries_on(r, desk, monkeypatch):
+    # Claude Code answers /mcp commands itself and starts no turn, so a reconnect the assistant was
+    # waiting for went unnoticed until the person's next message (8 Nov 2026).
+    alice = desk.users["alice"]
+    monkeypatch.setattr(alice, "ready", lambda: True)
+    monkeypatch.setattr(alice, "run_command", lambda c: "Successfully reconnected to srv")
+    typed = []
+    monkeypatch.setattr(alice, "type_message", lambda header, body: typed.append(header))
+    alice.queue = [r.work.SessionCommands(time.time(), commands=["/mcp reconnect srv"])]
+
+    r.work.serve(alice, time.time())
+
+    assert sent(r, ALICE_CHAT) == ["🔌 Successfully reconnected to srv"]
+    [note] = typed
+    assert note.startswith("[Router · ") and "For Alice, the router ran `/mcp reconnect srv`" in note
+    assert "(Successfully reconnected to srv)" in note and "carry on" in note
+
+
+def test_a_server_that_needs_a_sign_in_gets_no_note(r, desk, monkeypatch):
+    alice = desk.users["alice"]
+    monkeypatch.setattr(alice, "ready", lambda: True)
+    monkeypatch.setattr(alice, "run_command", lambda c: "Use /mcp to authenticate.")
+    alice.queue = [r.work.SessionCommands(time.time(), commands=["/mcp reconnect srv"])]
+
+    r.work.serve(alice, time.time())
+
+    assert alice.queue == []
+
+
 def test_a_message_that_keeps_failing_to_type_is_given_up_on(r, desk, monkeypatch):
     alice = desk.users["alice"]
     monkeypatch.setattr(alice, "ready", lambda: True)

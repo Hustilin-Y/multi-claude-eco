@@ -24,6 +24,8 @@ CANCEL_CLEAR = "cancel-clear"  # the kind of question CLEAR_WAITS is (router/ask
 CLEARED = "🧹 Context cleared. Starting fresh."
 RESTARTED = "🔄 Restarted with a new conversation. Starting fresh."
 FORCE_RELOAD = "/reload-plugins --force"  # what Claude Code asks for when a reload changes MCP tools
+MCP_CHANGES = ("reconnect", "enable", "disable")
+SIGN_IN_NEEDED = "Use /mcp to authenticate."
 
 
 @dataclass
@@ -157,22 +159,37 @@ class Reload(Work):
 
 @dataclass
 class SessionCommands(Work):
-    """In-session commands for /mcp, such as `/mcp reconnect x`."""
+    """In-session commands for /mcp, such as `/mcp reconnect x`. Claude Code answers them itself and
+    starts no turn, so once one changes a server the assistant gets a note (mcp_change_note) and can
+    carry on with what waited for it."""
     commands: list = field(default_factory=list)
 
     def run(self, user, now):
         user.queue.pop(0)
-        results, sign_ins = [], []
+        results, sign_ins, changes = [], [], []
         for command in self.commands:
             result = run_in_session(user, command)
-            if result and len(command.split()) > 2 and "Use /mcp to authenticate." in result:
-                sign_ins.append(f"/mcp login {command.split()[2]}")  # instead of Claude Code's own /mcp screen
-                result = result.replace("Use /mcp to authenticate.", f"Sign in: `{sign_ins[-1]}`")
+            words = command.split()
+            if result and len(words) > 2 and SIGN_IN_NEEDED in result:
+                sign_ins.append(f"/mcp login {words[2]}")  # instead of Claude Code's own /mcp screen
+                result = result.replace(SIGN_IN_NEEDED, f"Sign in: `{sign_ins[-1]}`")
+            elif result and len(words) > 2 and words[0] == "/mcp" and words[1] in MCP_CHANGES:
+                changes.append(f"`{command}` ({' '.join(result.split())})")
             if command != "/reload-plugins" or not result:
                 results.append(result or f"⚠️ {command}: no answer from {bot.name()}; "
                                          "the change applies when it next restarts.")
         user.say("🔌 " + "\n".join(results), copy=sign_ins)
+        if changes:
+            user.queue_message(Deliver(now, mcp_change_note(user, changes, now)), now)
         return True
+
+
+def mcp_change_note(user, changes, now):
+    """The line typed into the assistant once /mcp commands changed its servers."""
+    stamp = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(now))
+    return (f"[Router · {stamp}] For {user.display}, the router ran {' and '.join(changes)} in your terminal. "
+            "If anything you were doing waited for that server, carry on with it now and tell them how it went; "
+            "otherwise just stop, without a reply.")
 
 
 @dataclass
