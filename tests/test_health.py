@@ -5,6 +5,7 @@ test_assistant_cli.py, and the page's sparklines in relay/test/sparkline.test.js
 import json
 import os
 import subprocess
+import time
 from collections import namedtuple
 from types import SimpleNamespace
 
@@ -287,6 +288,28 @@ def test_the_router_alerts_at_once_and_says_when_its_back(health):
     assert [len(texts) for texts in told] == [1, 0, 1]
     assert told[0][0].startswith("🛑 **The router is down**: `assistant-watcher` isn't running")
     assert told[2][0].startswith("✅ **The router is running again.**")
+
+
+def test_a_router_that_polls_telegram_itself_alerts_once_it_has_heard_nothing_for_two_samples(health):
+    deaf, hearing = {**a_sample(), "telegram": False}, {**a_sample(), "telegram": True}
+    told = changes_over(health, deaf, deaf, hearing, {**a_sample(router=False), "telegram": False})
+    assert [len(texts) for texts in told] == [0, 1, 1, 1]
+    assert told[1][0].startswith("📡 **The router isn't hearing Telegram**: it has had no answer to its polling for 10 min")
+    assert told[2] == ["✅ **The router hears Telegram again.** It takes in what was sent meanwhile."]
+    assert told[3][0].startswith("🛑 **The router is down**")  # and that alone: a router that's down polls nothing
+
+
+def test_only_a_router_that_polls_telegram_itself_is_watched_for_it(health):
+    state = health.paths.STATE / "telegram-updates.json"
+    assert health.machine.telegram_heard() is None  # with a front desk, its plugin polls
+    write_json(health.paths.CONFIG, {"frontdesk": "router"})
+    assert health.machine.telegram_heard() is False
+    write_json(state, {"offset": 7, "saved": time.time() - 30})
+    assert health.machine.telegram_heard() is True
+    write_json(state, {"offset": 7, "saved": time.time() - health.machine.TELEGRAM_QUIET - 1})
+    assert health.machine.telegram_heard() is False
+    assert "  Telegram                heard by the router" in health.status.machine_lines({**a_sample(), "telegram": True})
+    assert not any("Telegram" in line for line in health.status.machine_lines(a_sample()))
 
 
 def test_an_assistant_alerts_once_it_has_been_missing_for_two_samples(health):

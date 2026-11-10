@@ -342,6 +342,7 @@ function machineRows({ sample, day, limits }) {
     ...disks.map((disk) => chartedMeter(`Disk ${disk.mount}`, disk.percent, `${size(disk.free_mb)} free of ${size(disk.total_mb)}`,
       disk === fullest ? charted("disk") : null)),
     runningRow("Router", sample.router),
+    sample.telegram == null ? null : heardRow(sample.telegram),
     ...sample.sessions.map((session) => runningRow(`${session.display}'s assistant`, session.running, session.asleep)),
     el("div", { className: "row" }, el("span", { className: "label" }, "Up for"),
       el("span", { className: "value" }, duration(sample.uptime))),
@@ -352,6 +353,13 @@ function alertRow(alert) {
   return el("div", { className: "row" }, el("span", { className: `dot ${alert.level === "critical" ? "failed" : "warn"}` }),
     el("span", { className: "label" }, alert.text,
       el("span", { className: "sub" }, `since ${moment(alert.since, snapshot.person.timezone)}`)));
+}
+
+// Only in samples of a router that polls Telegram itself, with no front desk.
+function heardRow(heard) {
+  return el("div", { className: "row" }, el("span", { className: `dot ${heard ? "ok" : "failed"}` }),
+    el("span", { className: "label" }, "Telegram"),
+    el("span", { className: "value" }, heard ? "heard by the router" : "not heard by the router"));
 }
 
 // asleep: an assistant put to sleep while idle, which wakes with its person's next message.

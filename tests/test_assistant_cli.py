@@ -4,6 +4,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -467,6 +468,66 @@ def test_status_and_attach_say_that_an_assistant_is_asleep(no_sessions):
     assert "  alice: Alice, Telegram 100, owner, assistant asleep while idle (their next message wakes it)" in status.stdout
     assert "  bob: Bob, Telegram 101, null, assistant NOT running" in status.stdout
     assert attach.returncode == 1 and "asleep while idle; start it with: assistant wake alice" in attach.stderr
+
+
+# --- the router polling Telegram itself ("frontdesk": "router") -----------------------------------
+
+TELEGRAM_PLUGIN = "telegram@claude-plugins-official"
+
+
+def no_front_desk(home):
+    (home.root / "config.json").write_text(json.dumps({"frontdesk": "router"}))
+
+
+def test_install_without_a_front_desk_needs_no_bun_and_turns_the_plugin_off_for_the_repos_folder(home):
+    no_front_desk(home)
+    (home.fake.bin / "bun").unlink()
+
+    r = home.run("install")
+
+    assert r.returncode == 0, r.stderr
+    assert not any(args[:2] == ["plugin", "install"] for args in home.fake.argvs())
+    local = json.loads((home.root / ".claude" / "settings.local.json").read_text())
+    assert local == {"enabledPlugins": {TELEGRAM_PLUGIN: False}}  # no session started there may poll with the bot's token
+
+
+def test_install_with_a_front_desk_again_gives_its_folder_the_plugin_back(home):
+    (home.root / ".claude").mkdir()
+    (home.root / ".claude" / "settings.local.json").write_text(json.dumps(
+        {"enabledPlugins": {TELEGRAM_PLUGIN: False, "foo@market": False}}))
+
+    r = home.run("install")
+
+    assert r.returncode == 0, r.stderr
+    assert json.loads((home.root / ".claude" / "settings.local.json").read_text()) == {"enabledPlugins": {"foo@market": False}}
+    assert ["plugin", "install", TELEGRAM_PLUGIN, "--scope", "project"] in home.fake.argvs()
+
+
+def test_status_without_a_front_desk_says_how_long_ago_the_router_heard_from_telegram(home):
+    no_front_desk(home)
+    before = home.run("status").stdout
+    (home.root / "state").mkdir(exist_ok=True)
+    (home.root / "state" / "telegram-updates.json").write_text(json.dumps({"offset": 7, "saved": time.time() - 30}))
+
+    out = home.run("status").stdout
+
+    assert "Telegram: polled by the router itself, no front desk; not heard from it yet" in before
+    assert re.search(r"Telegram: polled by the router itself, no front desk; last heard from it 3\ds ago", out)
+    assert "Telegram plugin" not in out and "front desk terminal" not in out
+
+
+def test_without_a_front_desk_its_run_loop_only_starts_the_assistants(no_sessions):
+    no_front_desk(no_sessions)
+    (no_sessions.fake.bin / "sleep").write_text('#!/bin/sh\necho "sleep $*" >> "$FAKE_CLAUDE_DIR/system.log"\n')
+    (no_sessions.fake.bin / "sleep").chmod(0o755)
+
+    r = subprocess.run([str(no_sessions.root / "bin" / "run.sh")], capture_output=True, text=True, timeout=60,
+                       env={**os.environ, "HOME": str(no_sessions.home), "FAKE_CLAUDE_DIR": str(no_sessions.fake.home)})
+
+    assert r.returncode == 0, r.stderr
+    assert "the router polls Telegram itself" in r.stdout
+    assert [started[3] for started in no_sessions.tmux()] == ["u-bob"]  # Alice's stays asleep
+    assert no_sessions.system_calls()[-1] == "sleep infinity" and no_sessions.fake.calls == []  # no claude, no plugin
 
 
 # --- the machine's health -------------------------------------------------------------------------
