@@ -9,6 +9,7 @@
  * add-in's routes (ADDON_ROUTES) are mounted while env.ADDONS, set by `assistant relay deploy`,
  * names it.
  */
+import { alarm as chatAlarm, inRelay as chatInRelay, routes as chatRoutes } from "./chat.js";
 import { SNAPSHOT_MAX, initDataOf, tapEnvelope, webAppUser } from "./panel.js";
 import { routes as ownTracksRoutes } from "./owntracks.js";
 import { routes as remindersRoutes } from "./reminders.js";
@@ -19,7 +20,8 @@ import { routes as siriRoutes } from "./voice.js";
 const KEPT_FOR = 24 * 60 * 60 * 1000;      // an envelope the VM hasn't collected in a day is dropped
 const PANEL_WAIT_FOR = 25 * 1000;          // ms a page's read waits for a snapshot newer than the one it has
 
-const ADDON_ROUTES = { slack: slackRoutes, siri: siriRoutes, locations: ownTracksRoutes, reminders: remindersRoutes };
+const ADDON_ROUTES = { slack: slackRoutes, siri: siriRoutes, locations: ownTracksRoutes, reminders: remindersRoutes,
+  chat: chatRoutes };
 
 /* {method (any when missing), path (a string, or a RegExp whose match goes to handle), handle}. */
 const CORE_ROUTES = [
@@ -83,8 +85,8 @@ async function panelFromVm(request, env, [, user]) {
   return relayObject(env).fetch(`https://relay/panel?user=${user}`, { method: "PUT", body });
 }
 
-/* The queue, each person's latest panel snapshot, and the requests waiting for the VM's answer.
- * Hibernatable WebSockets, so it sleeps between messages. */
+/* The queue, each person's latest panel snapshot, the requests waiting for the VM's answer, and
+ * what the chat add-in keeps (chat.js). Hibernatable WebSockets, so it sleeps between messages. */
 export class Relay {
   constructor(ctx) {
     this.ctx = ctx;
@@ -103,7 +105,13 @@ export class Relay {
     if (url.pathname === "/answer") return this.answer(param("id"), await request.text());
     if (url.pathname === "/panel" && request.method === "PUT") return this.keepPanel(param("user"), await request.text());
     if (url.pathname === "/panel") return this.panel(param("user"), Number(param("after")) || 0);
+    if (url.pathname.startsWith("/chat/")) return chatInRelay(this, url, request);
     return this.connect();
+  }
+
+  /* The chat add-in's events older than a day go, also for a page that stays closed (chat.js). */
+  alarm() {
+    chatAlarm(this);
   }
 
   /* Queue the envelope for the VM, and answer with {answer} once the VM puts one, or {late: true}

@@ -33,6 +33,14 @@ which runs that function of every add-in that is on and defines it. The hooks:
   their way to the assistant (router/work.py).
 - tg_commands() -> {name: fn(tg, args)}: commands the add-in adds to `tg` (bin/tg). fn's docstring
   is its usage line; ValueError says what's wrong with args.
+- tg_sent(sender, chat, record): `tg` sent (or edited) a message in chat, after the Bot API took it;
+  sender is $ASSISTANT_USER ("" for `assistant notify`, scripts and cron). record: {"kind": "send",
+  "ask", "checklist" or "edit", "msg_id", "markdown", "files": [{"name", "size", "mime"}],
+  "buttons", "copy"} (bin/tg). It runs in tg's process; what fails there never fails the send.
+- on_tick(desk, now): every pass of the router's loop, twice a second; do anything slow in the
+  background (router/desk.py).
+- menu_button(button) -> button: the {"text", "url"} of the button by every private chat's message
+  box, which opens the control panel unless an add-in changes it (router/panel.py, through()).
 
 Add-ins may offer hooks to each other the same way: voice-notes asks voice_note_sources() for the
 apps other than Telegram that send voice notes.
@@ -47,7 +55,7 @@ from multiclaude import config, paths
 from multiclaude.log import log
 
 ALL = ("slack", "siri", "voice-notes", "stickers", "locations", "reminders", "quiet-hours", "model-fallback",
-       "skill-notes", "backup")
+       "skill-notes", "backup", "chat")
 
 
 class _Listing:

@@ -31,7 +31,11 @@ to their own (crosschat.py).
 When Telegram can't be reached (the VM is offline), send (and an add-in's command that sends)
 holds the message instead and exits with 75: it goes out by itself, in order, once Telegram can
 be reached again.
+
+What it sends, asks and edits is also passed to the add-ins that are on (tg_sent) once Telegram has
+taken it: the chat add-in keeps it for its Mini App.
 """
+import mimetypes
 import os
 import sys
 import time
@@ -87,6 +91,16 @@ class Tg:
             self.held += 1
         else:
             self.sent(result)
+        return result
+
+    def tell_addons(self, kind, result, markdown="", files=(), buttons=(), copy=(), msg_id=None):
+        """Pass a message Telegram took to the add-ins that are on (tg_sent); nothing for one held.
+        A failure there is the add-in's to log: the message went."""
+        if msg_id is None and not isinstance(result, dict):
+            return
+        record = {"kind": kind, "msg_id": str(msg_id or result.get("message_id") or ""), "markdown": markdown,
+                  "files": [file_facts(path) for path in files], "buttons": list(buttons), "copy": list(copy)}
+        addons.call("tg_sent", os.environ.get("ASSISTANT_USER", ""), self.chat, record)
 
     def send(self, args):
         options = take_options(args, ("--reply-to", "--file", "--copy"), switches=("--separate", "--sound"))
@@ -117,7 +131,7 @@ class Tg:
         disable_notification wins over quiet hours, so --sound asks for a notification outright."""
         if self.sound:
             params["disable_notification"] = False
-        self.posted(send_or_hold(self.api, method, files=files, by=self.by, chat_id=self.chat, **params))
+        return self.posted(send_or_hold(self.api, method, files=files, by=self.by, chat_id=self.chat, **params))
 
     def send_rich(self, markdown, files=(), reply_to=None, copy=()):
         """One rich message: the Markdown, then each file as a media block below it."""
@@ -129,8 +143,9 @@ class Tg:
             media.append({"id": f"m{n}", "media": {"type": kind, "media": f"attach://file{n}"}})
             uploads[f"file{n}"] = path
         rich = {"markdown": "\n\n".join(blocks), **({"media": media} if media else {})}
-        self.post("sendRichMessage", files=uploads or None, rich_message=rich, reply_markup=copy_buttons(copy),
-                  reply_parameters=reply(reply_to))
+        result = self.post("sendRichMessage", files=uploads or None, rich_message=rich, reply_markup=copy_buttons(copy),
+                           reply_parameters=reply(reply_to))
+        self.tell_addons("send", result, markdown, files, copy=copy)
 
     def send_separately(self, markdown, files, reply_to=None, copy=()):
         """The Markdown on its own, then each file as a plain photo or document message, so each one
@@ -141,7 +156,9 @@ class Tg:
         for path in files:
             kind = file_kind(path)
             method = "sendPhoto" if kind == "photo" else "sendDocument"
-            self.post(method, files={kind: path}, reply_markup=copy_buttons(copy), reply_parameters=reply(reply_to))
+            result = self.post(method, files={kind: path}, reply_markup=copy_buttons(copy),
+                               reply_parameters=reply(reply_to))
+            self.tell_addons("send", result, files=[path], copy=copy)
             reply_to, copy = None, ()
 
     def ask(self, args):
@@ -157,6 +174,7 @@ class Tg:
                                reply_markup=questions.option_buttons(options))
         self.sent(result)
         self.save_question(result["message_id"], question, options)
+        self.tell_addons("ask", result, question, buttons=options)
 
     def save_question(self, message_id, question, options):
         try:
@@ -180,6 +198,7 @@ class Tg:
         self.sent(result)
         questions.save(paths.ASKS / str(self.chat), result["message_id"], title, items,
                        kind=questions.CHECKLIST, ticked=[])
+        self.tell_addons("checklist", result, title, buttons=items)
 
     def checked(self, args):
         if len(args) != 1:
@@ -202,8 +221,9 @@ class Tg:
         markdown = without_highlights(" ".join(args))
         if self.by and ChatHistory(self.chat).sent_by(message_id[0]) == self.by:
             markdown = self.signed(markdown)
-        self.api.call("editMessageText", chat_id=self.chat, message_id=message_id[0],
-                      rich_message={"markdown": markdown}, reply_markup=copy_buttons(copy))
+        result = self.api.call("editMessageText", chat_id=self.chat, message_id=message_id[0],
+                               rich_message={"markdown": markdown}, reply_markup=copy_buttons(copy))
+        self.tell_addons("edit", result, markdown, copy=copy, msg_id=message_id[0])
 
     def react(self, args):
         if len(args) != 2:
@@ -260,6 +280,16 @@ def copyable(texts):
 def file_kind(path):
     """How Telegram shows a file: a "photo" for a picture, a "document" for anything else."""
     return "photo" if Path(path).suffix.lower() in PHOTO_SUFFIXES else "document"
+
+
+def file_facts(path):
+    """What a sent file is, for the add-ins: its name, size and type."""
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        size = None
+    return {"name": Path(path).name, "size": size,
+            "mime": mimetypes.guess_type(str(path))[0] or "application/octet-stream"}
 
 
 def reply(message_id):

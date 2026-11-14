@@ -472,8 +472,9 @@ cmd_job() {
   # Jobs run in the user's workspace (their CLAUDE.md and memory). They must not
   # load the Telegram plugin: a second copy would take over the live bot, and a
   # failed one makes Claude skip the plugin at the next start. The prompt goes in
-  # on stdin, so one starting with "-" isn't taken for an option.
-  output=$(cd "$ws" && printf '%s' "$prompt" | TG_CHAT_ID="$id" ASSISTANT_USER="$user" \
+  # on stdin, so one starting with "-" isn't taken for an option. ASSISTANT_JOB tells tg's add-ins
+  # that what it sends is a job's, not the live conversation's (the chat add-in leaves it out).
+  output=$(cd "$ws" && printf '%s' "$prompt" | TG_CHAT_ID="$id" ASSISTANT_USER="$user" ASSISTANT_JOB=1 \
              timeout "$JOB_TIMEOUT" claude -p --output-format json \
              --settings "$TELEGRAM_PLUGIN_OFF" \
              --permission-mode auto --permission-prompts none --no-session-persistence \

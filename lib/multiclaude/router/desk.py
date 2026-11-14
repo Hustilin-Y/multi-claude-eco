@@ -167,6 +167,7 @@ class Desk:
         self.panel.tick(now)
         self.upgrader.tick(now, self.sessions(), self.users.get(self.owner))
         self.hibernator.tick(now, list(self.users.values()))
+        addons.call("on_tick", self, now)
         if self.desk:
             self.save_desk_offsets(now)
             self.reset_desk(now)

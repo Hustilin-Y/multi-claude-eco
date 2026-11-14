@@ -1,0 +1,1 @@
+Next: run `assistant relay deploy`, so the relay starts or stops serving the chat, then `assistant restart`, so the menu button says Chat (or Panel again).

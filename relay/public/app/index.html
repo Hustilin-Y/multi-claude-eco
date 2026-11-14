@@ -2,21 +2,56 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <title>Control panel</title>
 <!-- Telegram's Mini App script (telegram.org/js/telegram-web-app.js?64), served from here:
      some networks block telegram.org, and then the page can't tell who opened it. -->
 <script src="telegram-web-app.js"></script>
 <link rel="stylesheet" href="app.css">
+<link rel="stylesheet" href="chat.css">
 </head>
 <body>
-<main>
+<!-- The tab bar shows only while the chat add-in is on (chat.js). -->
+<nav id="tabs" class="tabs" role="tablist" hidden>
+  <button type="button" role="tab" data-tab="chat">Chat</button>
+  <button type="button" role="tab" data-tab="panel">Panel</button>
+</nav>
+<main id="panel">
   <p id="status" class="status">Loading…</p>
   <p id="notice" class="notice" hidden></p>
   <div id="sections"></div>
   <button id="home-screen" class="wide" hidden>Add to home screen</button>
 </main>
+<div id="chat" class="chat" hidden>
+  <header class="chat-head">
+    <div class="chat-title"><span id="chat-bot">Chat</span> <span id="chat-state" class="chat-state"></span></div>
+    <button type="button" id="chat-timings" class="icon-button" aria-label="Timings" hidden>⏱</button>
+    <button type="button" id="chat-new" class="icon-button" aria-label="New chat">✎</button>
+  </header>
+  <div id="chat-body" class="chat-body">
+    <div id="chat-banner" class="chat-banner" role="status" hidden></div>
+    <div id="chat-list" class="chat-list">
+      <button type="button" id="chat-older" class="older" hidden>Show earlier messages</button>
+      <div id="chat-empty" class="chat-empty" hidden></div>
+      <div id="chat-items" class="chat-items" role="log" aria-live="polite"></div>
+    </div>
+    <div id="chat-status" class="chat-status" role="status" hidden></div>
+    <form id="chat-composer" class="composer">
+      <div class="chips">
+        <button type="button" id="chip-model" class="chip">Model</button>
+        <button type="button" id="chip-effort" class="chip">Effort</button>
+      </div>
+      <div class="compose-row">
+        <textarea id="chat-text" rows="1" maxlength="20000" aria-label="Message"></textarea>
+        <button type="submit" id="chat-send" class="send" aria-label="Send">↑</button>
+      </div>
+      <div class="compose-foot"><span id="chat-error" class="chat-error" role="alert"></span><span id="chat-counter" class="counter"></span></div>
+    </form>
+  </div>
+</div>
+<div id="chat-sheet" class="sheet" hidden><div class="sheet-card" role="dialog" aria-modal="true"></div></div>
 <div id="toast" class="toast" role="status" hidden></div>
 <script src="app.js" type="module"></script>
+<script src="chat.js" type="module"></script>
 </body>
 </html>

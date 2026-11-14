@@ -69,10 +69,13 @@ def address():
 
 
 def set_menu_button():
-    """Have the button by every private chat's message box open the panel."""
+    """Have the button by every private chat's message box open the panel, or what an add-in that's
+    on opens there instead (menu_button)."""
     url = address()
     if url:
-        telegram.api("setChatMenuButton", menu_button={"type": "web_app", "text": MENU_BUTTON, "web_app": {"url": url}})
+        button = addons.through("menu_button", {"text": MENU_BUTTON, "url": url})
+        telegram.api("setChatMenuButton", menu_button={"type": "web_app", "text": button["text"],
+                                                       "web_app": {"url": button["url"]}})
 
 
 # --- what a setting may be set to: the value to save, or ValueError saying why not ---

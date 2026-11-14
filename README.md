@@ -26,6 +26,7 @@ Add-ins are in the repo but off until the owner turns them on. The core works fu
 | Add-in | What it does | What it needs |
 | --- | --- | --- |
 | [slack](addons/slack/README.md) | People talk to their assistant from a Slack DM too | The relay, a Slack app |
+| [chat](addons/chat/README.md) | A chat screen in the Mini App, next to the control panel, with model and effort pickers, rich Markdown, the assistant's steps and a Stop button, onto the same assistant as the Telegram chat | The relay |
 | [siri](addons/siri/README.md) | People talk to their assistant through Siri, with an Apple Shortcut | The relay, Apple's Shortcuts app |
 | [voice-notes](addons/voice-notes/README.md) | Voice notes are transcribed with Whisper before the assistant gets them | uv, about 1 GB of disk |
 | [stickers](addons/stickers/README.md) | Stickers reach the assistant as a picture, animated ones as a grid of frames, not only as their emoji | uv, about 100 MB of disk |
@@ -183,7 +184,7 @@ The login is kept in `~/.config/claude-usage/credentials.json` and refreshes by 
 
    It deploys the Worker `assistant-relay` on your workers.dev subdomain, gives it its secrets, saves its address for the router in `state/relay.json`, and restarts the router, which then puts a **Panel** button by every chat's message box.
 
-Run `assistant relay deploy` again after a change in `relay/`, and after turning an add-in with routes on the relay (slack, siri, locations, reminders) on or off.
+Run `assistant relay deploy` again after a change in `relay/`, and after turning an add-in with routes on the relay (slack, siri, locations, reminders, chat) on or off.
 
 ### The bot's name
 
@@ -217,7 +218,7 @@ assistant addon disable <name>
 
 Enabling runs the add-in's own setup, if it has one (voice-notes installs Whisper, stickers its renderer, slack checks its tokens, backup starts its repository), and disabling its teardown (backup takes its cron line out). Enabling lists it in `config.json`, adds its rules to the assistants' rules, restarts the router and prints anything left to do. Each assistant reads its new rules from its next `/clear` or restart. Each add-in's README says what it needs and how to set it up:
 
-- [slack](addons/slack/README.md), [siri](addons/siri/README.md), [voice-notes](addons/voice-notes/README.md), [stickers](addons/stickers/README.md), [locations](addons/locations/README.md), [reminders](addons/reminders/README.md), [quiet-hours](addons/quiet-hours/README.md), [model-fallback](addons/model-fallback/README.md), [skill-notes](addons/skill-notes/README.md), [backup](addons/backup/README.md)
+- [slack](addons/slack/README.md), [chat](addons/chat/README.md), [siri](addons/siri/README.md), [voice-notes](addons/voice-notes/README.md), [stickers](addons/stickers/README.md), [locations](addons/locations/README.md), [reminders](addons/reminders/README.md), [quiet-hours](addons/quiet-hours/README.md), [model-fallback](addons/model-fallback/README.md), [skill-notes](addons/skill-notes/README.md), [backup](addons/backup/README.md)
 
 ## Adding people
 

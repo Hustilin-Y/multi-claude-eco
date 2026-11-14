@@ -13,9 +13,9 @@ const TAP_MAX = 4096;                    // bytes of a tap's JSON
 const ID_RE = /^[\w-]{1,64}$/;
 
 /* The Telegram user who opened the panel, from its init data, when Telegram signed it less than
- * SIGNED_FOR ago; null otherwise. The data checked is every field but the hash, sorted, one
+ * signedFor seconds ago; null otherwise. The data checked is every field but the hash, sorted, one
  * "key=value" a line. */
-export async function webAppUser(initData, keyHex, now = Date.now()) {
+export async function webAppUser(initData, keyHex, now = Date.now(), signedFor = SIGNED_FOR) {
   if (!initData || !keyHex) return null;
   const fields = new URLSearchParams(initData);
   const hash = fields.get("hash") || "";
@@ -23,7 +23,7 @@ export async function webAppUser(initData, keyHex, now = Date.now()) {
   const checked = [...fields].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
     .map(([key, value]) => `${key}=${value}`).join("\n");
   if (!sameSecret(hash, await hmacHex(fromHex(keyHex), checked))) return null;
-  if (now / 1000 - Number(fields.get("auth_date")) > SIGNED_FOR) return null;
+  if (now / 1000 - Number(fields.get("auth_date")) > signedFor) return null;
   try {
     const user = JSON.parse(fields.get("user"));
     return user && Number.isSafeInteger(user.id) ? user : null;
