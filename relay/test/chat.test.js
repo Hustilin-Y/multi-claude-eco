@@ -305,3 +305,18 @@ test("an add-in's state for its tab is kept once per add-in, the newest, up to 6
   await relay.fetch(fromVm(String(ALICE), { events: [state(5, ["c".repeat(70_000)])] }), env);
   assert.equal(JSON.parse(queue.chat.events(String(ALICE), 0).at(-1)).seq, 4);
 });
+
+test("a form's request to improve a field carries its action, field and values; anything else is turned away", async (t) => {
+  // [AC-F3.1] Every check a message gets, then a chat envelope of kind assist.
+  const { vm, env } = await chatRelay(t);
+  const request = { kind: "assist", action: "ext:launch", field: "task", values: { task: "look", private: true } };
+  assert.equal((await send(env, "look", { extra: request })).status, 202);
+  const { payload } = sentChats(vm)[0];
+  assert.deepEqual([payload.kind, payload.action, payload.field, payload.values], ["assist", "ext:launch", "task", request.values]);
+  for (const [n, bad] of [{ ...request, kind: "other" }, { ...request, field: "../x" }, { ...request, values: [1] },
+    { ...request, values: { task: { nested: 1 } } }].entries()) {
+    const reply = await send(env, "look", { clientId: `0b9f3c2e-5d4a-4c1b-9e8f-00000000000${n}`, extra: bad });
+    assert.equal(reply.status, 400);
+  }
+  assert.equal(sentChats(vm).length, 1);
+});

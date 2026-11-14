@@ -303,7 +303,16 @@ body.in-chat .tabs { position: static; flex: none; width: 100%; background: var(
 .cursor { color: var(--hint); }
 .sheet-group { margin: 12px 6px 4px; color: var(--hint); font-size: 12px; font-weight: 600; text-transform: uppercase; }
 .form-field { display: flex; flex-direction: column; gap: 4px; margin: 0 6px 12px; }
-.form-field.switch { flex-direction: row; align-items: center; justify-content: space-between; }
+.form-field .field-label { color: var(--hint); font-size: 13px; }
+/* A switch is one row: its label, which wraps in its own box, then the toggle (F2). */
+.form-field.field-switch { flex-direction: row; align-items: center; gap: 12px; cursor: pointer; }
+.form-field.field-switch .field-label { flex: 1; min-width: 0; color: var(--text); font-size: 15px; }
+/* A text area keeps the sheet's width and grows only downwards when dragged (F1). */
+.form-field textarea { width: 100%; resize: vertical; min-height: calc(4 * 1.35em + 18px); max-height: 60vh; }
+.form-field-group .form-field { margin-bottom: 4px; }
+.assist-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin: 0 6px 12px; }
+.assist-row .assist { font-weight: 600; }
+.assist-row .spinning { animation: pulse 1s ease-in-out infinite; }
 .form-field select, .form-field input[type="text"], .form-field textarea {
   min-height: 44px;
   padding: 8px 10px;
@@ -313,4 +322,4 @@ body.in-chat .tabs { position: static; flex: none; width: 100%; background: var(
   color: var(--text);
   font: inherit;
 }
-.form-field input[type="checkbox"] { width: 22px; height: 22px; }
+

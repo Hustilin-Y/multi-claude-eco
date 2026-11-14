@@ -704,6 +704,7 @@ class Ext:
         self.__name__ = "multiclaude.addons.ext"
         self.messages, self.stops = [], []
         self.takes = True
+        self.assists, self.assist_answer = [], {"text": "Goal: an English brief."}
 
     def chat_tabs(self, user):
         return [{"id": "runs", "title": "Runs"}]
@@ -721,6 +722,10 @@ class Ext:
 
     def chat_stop(self, user, target):
         self.stops.append((user.name, target))
+
+    def chat_assist(self, user, action, field, values):
+        self.assists.append((user.name, action, field, values))
+        return self.assist_answer
 
     def chat_backfill(self, user):
         return [{"kind": "model_message", "key": "ext:old", "ts": "2026-11-14T09:00:00.000Z", "target": "ext:m1",
@@ -832,3 +837,53 @@ def test_an_add_ins_events_reach_the_open_page_and_its_backfill(r, desk, chat, e
                      ("status", "ext:m1")]
     assert all(e["seq"] for e in feed_events(chat))
     assert "over 65536 bytes; left out" in capsys.readouterr().err
+
+
+def assist(text="look at the repo", client_id=CID, **extra):
+    return message(text, client_id=client_id, kind="assist", action="ext:launch", field="what",
+                   values={"what": text, "private": False}, **extra)
+
+
+def test_a_form_field_is_improved_by_the_add_in_that_brings_it_never_by_the_assistant(r, desk, chat, ext):
+    """[AC-F3.1] The button shows while the add-in has chat_assist; a press reaches it, not the assistant."""
+    alice = desk.users["alice"]
+    session_transcript(r, alice)
+    open_page(desk, chat)
+    (settings,) = shown(chat, "settings")
+    assert settings["assist"] == ["ext"]
+
+    desk.relay_inbound(assist())
+    desk.relay_inbound(assist())  # a retry
+    chat.on_tick(desk, time.time())
+
+    assert ext.assists == [("alice", "launch", "what", {"what": "look at the repo", "private": False})]
+    (result,) = shown(chat, "assist_result")
+    assert (result["client_id"], result["text"]) == (CID, "Goal: an English brief.")
+    assert alice.queue == [] and dm_copies(r) == [] and shown(chat, "user_message") == []
+
+
+def test_an_add_in_that_cant_improve_it_leaves_the_text_and_says_why(r, desk, chat, ext):
+    """[AC-F3.4] The page keeps the person's text and shows the reason."""
+    session_transcript(r, desk.users["alice"])
+    open_page(desk, chat)
+    ext.assist_answer = {"error": "the gateway timed out"}
+    desk.relay_inbound(assist())
+    chat._assisting.add("alice")
+    desk.relay_inbound(assist(client_id=OTHER_CID))
+    chat.on_tick(desk, time.time())
+
+    assert [r["error"] for r in shown(chat, "assist_result")] == ["the gateway timed out",
+                                                                  "one at a time: the last one is still being improved"]
+
+
+def test_without_an_add_in_that_assists_there_is_no_button_and_a_request_goes_nowhere(r, desk, chat):
+    """[AC-F3.1]"""
+    session_transcript(r, desk.users["alice"])
+    open_page(desk, chat)
+    desk.relay_inbound(assist())
+    desk.relay_inbound(message("odd", client_id=OTHER_CID, kind="assist", action="ext:launch", field="../x", values={}))
+    chat.on_tick(desk, time.time())
+
+    assert shown(chat, "settings")[0]["assist"] == []
+    assert [r["error"] for r in shown(chat, "assist_result")] == ["that form's add-in can't help with it now"]
+    assert desk.users["alice"].queue == []

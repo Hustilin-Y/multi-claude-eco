@@ -24,6 +24,9 @@ asks the add-ins that are on, by these names, and knows each add-in only by the 
   assistant, the transcript or the Telegram chat. "/clear" sent to a target comes here too.
 - chat_stop(user, target): Stop while that target answers.
 - chat_backfill(user) -> [event]: the add-in's own events for a page that opens.
+- chat_assist(user, action, field, values) -> {"text"} or {"error"}: write a form field of one of its
+  actions anew from the form's values (a field with "assist": {"label"} gets a button for it); run in
+  the background, one at a time per person, its answer back as an "assist_result" event.
 is_open(user) says whether the person's page reads the feed now, and feed_add(user, event) puts an
 add-in's event on an open page: "model_message" (key, model,
 markdown, done, meta), "addon_state" (addon, state; the page's tab for that add-in gets it, the
@@ -51,6 +54,8 @@ CLOCK_SKEW = 300
 TARGET_RE = re.compile(r"[a-z0-9][a-z0-9-]*:[\w.:-]{1,80}")  # "<add-in>:<its own id>"
 ADDON_STATE_MAX = 64 * 1024                # bytes of an add-in's state for its tab
 NOT_AVAILABLE = "That model isn't available now."
+FIELD_RE = re.compile(r"\w{1,40}")
+_assisting = set()                         # people with a field being improved
 MEMBERS_EVERY = 10 * 60                    # the members list is put again this often, in case the relay lost it
 MEMBERS_RETRY = 30
 CHAT_COMMAND_RE = re.compile(r"/chat(@\w+)?")
@@ -219,8 +224,15 @@ def take_message(desk, payload, now=None):
     if target is not None and not TARGET_RE.fullmatch(str(target)):
         log(f"{user.name}: a chat message to {target!r}, which is no target; dropped")
         return
+    kind = payload.get("kind")
+    if kind is not None and (kind != "assist" or not assist_request(payload)):
+        log(f"{user.name}: a chat {kind!r} that isn't one; dropped")
+        return
     if not files.take_message(user.name, client_id, now):
         log(f"{user.name}: chat message {client_id} came again; it was taken already")
+        return
+    if kind == "assist":
+        to_assist(user, payload, client_id, now)
         return
     if target:
         to_target(user, target, text, client_id, now)
@@ -259,6 +271,45 @@ def to_target(user, target, text, client_id, now):
         feed.add({"kind": "notice", "key": f"n:{client_id}", "ts": events.iso(now), "text": NOT_AVAILABLE}, now)
 
 
+def assist_request(payload):
+    """Whether an "assist" envelope names an action, a field and the form's values as the relay checks them."""
+    values = payload.get("values")
+    return (isinstance(payload.get("action"), str) and TARGET_RE.fullmatch(payload["action"])
+            and isinstance(payload.get("field"), str) and FIELD_RE.fullmatch(payload["field"])
+            and isinstance(values, dict) and len(values) <= 20
+            and all(FIELD_RE.fullmatch(str(k)) and isinstance(v, (str, bool)) for k, v in values.items()))
+
+
+def to_assist(user, payload, client_id, now):
+    """A form's request to improve one of its fields (F3): to the add-in that brings the form, in the
+    background, its answer back as an assist_result event. Never to the assistant."""
+    name, action = payload["action"].split(":", 1)
+    feed = feed_of(user)
+    feed.message_came(now, wake=False)
+
+    def answer(result):
+        result = result if isinstance(result, dict) else {}
+        text = result.get("text")
+        event = ({"text": text} if isinstance(text, str) and text.strip()
+                 else {"error": str(result.get("error") or "nothing came back")})
+        feed.add({"kind": "assist_result", "client_id": client_id, "action": payload["action"],
+                  "field": payload["field"], **event})
+
+    if user.name in _assisting:
+        answer({"error": "one at a time: the last one is still being improved"})
+        return
+    _assisting.add(user.name)
+
+    def run():
+        try:
+            log(f"{user.name}: improving {payload['field']} of {payload['action']}")
+            answer(offer(name, "chat_assist", user, action, payload["field"], payload["values"])
+                   or {"error": "that form's add-in can't help with it now"})
+        finally:
+            _assisting.discard(user.name)
+    later(run)
+
+
 # --- what other add-ins bring to the chat ---
 
 def addon_name(module):
@@ -295,7 +346,14 @@ def extras(user):
             "models": [{"target": f"{name}:{m['id']}", "label": str(m.get("label") or m["id"]),
                         "hint": m.get("hint") or "", "group": m.get("group") or name, "badge": m.get("badge") or ""}
                        for name, m in listed("chat_models")],
-            "actions": [{**a, "id": f"{name}:{a['id']}", "addon": name} for name, a in listed("chat_actions")]}
+            "actions": [{**a, "id": f"{name}:{a['id']}", "addon": name} for name, a in listed("chat_actions")],
+            "assist": assisters()}
+
+
+def assisters():
+    """The add-ins that are on and can improve a form field (chat_assist): only their fields get the button."""
+    from multiclaude import addons
+    return [addon_name(m) for m in addons.active() if callable(getattr(m, "chat_assist", None))]
 
 
 def backfilled(user):

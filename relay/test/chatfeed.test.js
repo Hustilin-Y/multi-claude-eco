@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { gzipSync } from "node:zlib";
 
-import { STRINGS, addOlder, apply, composerCheck, enterSends, fillTemplate, hasGap, localMessage, modelGroups, newConversation,
+import { STRINGS, addOlder, apply, assistCheck, assistShown, composerCheck, enterSends, fillTemplate, hasGap, localMessage, modelGroups, newConversation,
   setState, statusText, targetBusy, targetStatusText,
   switchOutcome } from "../public/app/chatfeed.js";
 import { highlight } from "../public/app/highlight.js";
@@ -168,4 +168,19 @@ test("a target's status and an add-in's state are kept apart from the assistant'
   assert.equal(targetStatusText(conversation.targets["ext:m1"], Date.parse(since) + 5000), "Loading the model… 5s");
   assert.deepEqual(conversation.addonStates.ext, { runs: [1] });
   assert.deepEqual(conversation.items.map((i) => [i.key, i.markdown, i.done]), [["ext:1", "Hello", true]]);
+});
+
+test("Improve shows only where the form's add-in can help, and only for text it may send", () => {
+  // [AC-F3.1]
+  const action = { addon: "ext" };
+  const field = { name: "task", type: "textarea", assist: { label: "✨ Improve" } };
+  assert.equal(assistShown(action, field, { assist: ["ext"] }), true);
+  assert.equal(assistShown(action, field, { assist: [] }), false);
+  assert.equal(assistShown(action, { ...field, assist: undefined }, { assist: ["ext"] }), false);
+  assert.equal(assistCheck("  ").ok, false);
+  assert.equal(assistCheck("x".repeat(8001)).ok, false);
+  assert.equal(assistCheck("look at it").ok, true);
+  const conversation = newConversation();
+  apply(conversation, [{ seq: 1, kind: "assist_result", client_id: "c1", error: "timed out" }], true);
+  assert.deepEqual(conversation.assists.c1, { text: undefined, error: "timed out" });
 });

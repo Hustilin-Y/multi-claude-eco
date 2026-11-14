@@ -32,7 +32,8 @@ const KEEP_OPEN_EVERY = 60 * 1000;               // ms between the reads that te
 const PUT_MAX = 8 * 1024 * 1024;                 // bytes of what the VM puts at once
 const CUT_NOTE = "… (full text in Telegram)";
 const CLIENT_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const TARGET_RE = /^[a-z0-9][a-z0-9-]*:[\w.:-]{1,80}$/;  // "<add-in>:<its own id>": a model another add-in brings
+const TARGET_RE = /^[a-z0-9][a-z0-9-]*:[\w.:-]{1,80}$/;
+const FIELD_RE = /^\w{1,40}$/;  // "<add-in>:<its own id>": a model another add-in brings
 
 export const routes = [
   { method: "POST", path: "/app/chat/send", handle: send },
@@ -82,14 +83,29 @@ export function chatMessage(body) {
   if (!CLIENT_ID_RE.test(clientId) || typeof text !== "string" || !text.trim() || text.length > TEXT_MAX) return null;
   const target = posted?.target;
   if (target != null && !(typeof target === "string" && TARGET_RE.test(target))) return null;
-  return { client_id: clientId.toLowerCase(), text, ...(target ? { target } : {}) };
+  const message = { client_id: clientId.toLowerCase(), text, ...(target ? { target } : {}) };
+  if (posted?.kind == null) return message;
+  return posted.kind === "assist" ? assistRequest(message, posted) : null;
+}
+
+/* A form's request to have one of its fields improved by the add-in that brings the form: its action
+ * ("<add-in>:<id>"), the field, and the form's values (strings and switches, as the page has them). */
+function assistRequest(message, { action, field, values }) {
+  if (typeof action !== "string" || !TARGET_RE.test(action) || typeof field !== "string" || !FIELD_RE.test(field)) return null;
+  if (!values || typeof values !== "object" || Array.isArray(values)) return null;
+  const entries = Object.entries(values);
+  if (entries.length > 20 || !entries.every(([name, value]) => FIELD_RE.test(name)
+    && (typeof value === "boolean" || typeof value === "string" && value.length <= TEXT_MAX))) return null;
+  return { ...message, kind: "assist", action, field, values };
 }
 
 /* The envelope that takes a message to the VM: one per person and message (a retry is the same one),
  * with the init data for the VM to check again and when it was queued. */
-export function chatEnvelope(user, initData, { client_id: clientId, text, target }, now = Date.now()) {
+export function chatEnvelope(user, initData, { client_id: clientId, text, target, kind, action, field, values },
+  now = Date.now()) {
   return { envelope_id: `chat:${user}:${clientId}`, type: "chat",
-    payload: { init_data: initData, client_id: clientId, text, ...(target ? { target } : {}), queued_at: now / 1000 } };
+    payload: { init_data: initData, client_id: clientId, text, ...(target ? { target } : {}),
+      ...(kind ? { kind, action, field, values } : {}), queued_at: now / 1000 } };
 }
 
 async function feed(request, env) {

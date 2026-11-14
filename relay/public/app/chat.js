@@ -12,7 +12,8 @@
  * models (a message to one goes to that add-in, never to the assistant: the composer's target) and
  * actions (a form that fills the composer), all listed in the settings event (chat add-in, X1–X6).
  */
-import { STOP_WITHIN, STRINGS, addOlder, apply, busy, composerCheck, enterSends, fileSize, fillTemplate, localMessage,
+import { ASSIST_WITHIN, STOP_WITHIN, STRINGS, addOlder, apply, assistCheck, assistShown, busy, composerCheck, enterSends,
+  fileSize, fillTemplate, localMessage,
   modelGroups, newConversation, setState, sourceLabel, statusText, switchOutcome, targetBusy, targetStatusText }
   from "./chatfeed.js";
 import { render as renderMarkdown } from "./markdown.js";
@@ -429,7 +430,7 @@ function pickSheet(setting) {
   const hints = setting === "model" ? STRINGS.modelHints : STRINGS.effortHints;
   let keep = storedKeep();
   const keepNote = el("span", { className: "sub" }, STRINGS.keepHint);
-  const keepSwitch = el("input", { type: "checkbox", checked: keep, onchange: () => {
+  const keepSwitch = el("input", { type: "checkbox", className: "switch", checked: keep, onchange: () => {
     keep = keepSwitch.checked;
     storeKeep(keep);
   } });
@@ -656,6 +657,8 @@ function actionsSheet() {
 
 function actionForm(action) {
   const inputs = {};
+  const valuesNow = () => Object.fromEntries(Object.entries(inputs).map(([name, input]) => [name,
+    input.type === "checkbox" ? input.checked : input.value]));
   const fields = (action.form || []).map((field) => {
     let input;
     if (field.type === "select") {
@@ -666,22 +669,84 @@ function actionForm(action) {
     } else if (field.type === "textarea") {
       input = el("textarea", { rows: 4, value: field.default || "" });
     } else if (field.type === "switch") {
-      input = el("input", { type: "checkbox", checked: Boolean(field.default) });
+      // The input itself is the toggle (the panel's .switch): one focusable control, no square beside it.
+      input = el("input", { type: "checkbox", className: "switch", checked: Boolean(field.default) });
     } else {
       input = el("input", { type: "text", value: field.default || "" });
     }
     inputs[field.name] = input;
-    return el("label", { className: `form-field ${field.type || "text"}` }, el("span", { className: "sub" }, field.label || field.name), input);
+    const row = el("label", { className: `form-field field-${field.type || "text"}` },
+      el("span", { className: "field-label" }, field.label || field.name), input);
+    if (field.type !== "textarea" || !assistShown(action, field, conversation.settings)) return row;
+    return el("div", { className: "form-field-group" }, row, assistControls(action, field, input, valuesNow));
   });
   const fill = () => {
-    const values = Object.fromEntries(Object.entries(inputs).map(([name, input]) => [name,
-      input.type === "checkbox" ? input.checked : input.value]));
     closeSheet();
-    fillComposer(fillTemplate(action, values));
+    fillComposer(fillTemplate(action, valuesNow()));
   };
   openSheet(`${action.icon ? `${action.icon} ` : ""}${action.label || action.id}`, [...fields,
     action.note ? el("p", { className: "sheet-text sub" }, action.note) : null,
     el("button", { className: "sheet-button", onclick: fill }, STRINGS.fill)]);
+}
+
+/* "✨ Improve" under a textarea whose action's add-in can help with it (chat_assist): the form's values go
+ * to that add-in, which writes the field anew; Undo puts the person's own text back. Nothing goes to the
+ * assistant, and nothing is sent by the form itself. */
+function assistControls(action, field, input, valuesNow) {
+  const button = el("button", { type: "button", className: "link-button assist" }, field.assist.label || STRINGS.improve);
+  const undo = el("button", { type: "button", className: "link-button", hidden: true }, STRINGS.undo);
+  const note = el("span", { className: "sub assist-note" });
+  let own = null;
+  button.addEventListener("click", async () => {
+    const text = input.value;
+    const check = assistCheck(text);
+    if (!check.ok) {
+      note.textContent = check.reason;
+      return;
+    }
+    const clientId = crypto.randomUUID();
+    button.disabled = input.readOnly = true;
+    button.classList.add("spinning");
+    note.textContent = STRINGS.improving;
+    try {
+      await relay("chat/send", { client_id: clientId, text, kind: "assist", action: action.id, field: field.name,
+        values: valuesNow() });
+      const result = await assisted(clientId);
+      if (result.text) {
+        own = text;
+        input.value = result.text;
+        undo.hidden = false;
+        note.textContent = "";
+      } else {
+        note.textContent = STRINGS.couldntImprove(result.error);
+      }
+    } catch (error) {
+      note.textContent = STRINGS.couldntImprove(error instanceof Refused && error.error === "reopen" ? STRINGS.reopen
+        : error.message);
+    } finally {
+      button.disabled = input.readOnly = false;
+      button.classList.remove("spinning");
+    }
+  });
+  undo.addEventListener("click", () => {
+    if (own !== null) input.value = own;
+    undo.hidden = true;
+  });
+  return el("div", { className: "assist-row" }, button, undo, note);
+}
+
+/* The assist_result event for clientId, as the feed brings it; an error after ASSIST_WITHIN. */
+function assisted(clientId) {
+  return new Promise((resolve) => {
+    const started = Date.now();
+    const look = () => {
+      const result = conversation.assists[clientId];
+      if (result) resolve(result);
+      else if (Date.now() - started > ASSIST_WITHIN) resolve({ error: STRINGS.noAnswer });
+      else setTimeout(look, 250);
+    };
+    look();
+  });
 }
 
 /* Put text in the composer for the person to read and send. */

@@ -7,6 +7,8 @@
 export const TEXT_MAX = 16000;
 export const COUNTER_FROM = 14000;
 export const STOP_WITHIN = 15000;  // ms for a turn to end after Stop before the page says it didn't
+export const ASSIST_WITHIN = 75000;  // ms the page waits for an add-in to improve a field (it gives up at 60 s)
+export const ASSIST_MAX = 8000;     // characters of a field sent to be improved
 
 export const STRINGS = {
   stranger: "This bot doesn't know you yet. Message it in Telegram to get a pairing code.",
@@ -66,13 +68,21 @@ export const STRINGS = {
   actions: "Actions",
   fill: "Put in the message box",
   targetGone: "That model isn't offered any more; messages go to the assistant again.",
+  improve: "✨ Improve",
+  improving: "Improving…",
+  undo: "Undo",
+  couldntImprove: (reason) => `Couldn't improve it: ${reason || "no reason given"}`,
+  noAnswer: "no answer in time",
+  nothingToImprove: "Write something first.",
+  tooLongToImprove: `At most ${(8000).toLocaleString("en-US")} characters can be improved.`,
 };
 
 const DELIVERY = { failed: 0, sending: 1, queued: 2, delivered: 3 };
 const BUSY = new Set(["waking", "thinking", "tool", "waiting_approval"]);
 
 export function newConversation() {
-  return { items: [], lastSeq: 0, status: null, settings: null, cursor: undefined, targets: {}, addonStates: {} };
+  return { items: [], lastSeq: 0, status: null, settings: null, cursor: undefined, targets: {}, addonStates: {},
+    assists: {} };
 }
 
 /* Whether events (as they came, oldest first) skip a seq after last, the one the page had: they're
@@ -108,6 +118,9 @@ function take(conversation, event) {
     case "status":
       if (event.target) conversation.targets[event.target] = event;  // a model another add-in brings
       else conversation.status = event;
+      return;
+    case "assist_result":
+      conversation.assists[event.client_id] = { text: event.text, error: event.error };  // the form waiting for it reads it
       return;
     case "addon_state":
       conversation.addonStates[event.addon] = event.state;  // the newest only, for the add-in's tab
@@ -206,6 +219,19 @@ export function modelGroups(claudeModels, extra = []) {
     group.models.push(model);
   }
   return groups;
+}
+
+/* Whether a form field gets the "✨ Improve" button: it asks for one (assist), and the add-in that brings
+ * its action can help (chat_assist, listed in the settings event). */
+export function assistShown(action, field, settings) {
+  return Boolean(field?.assist && (settings?.assist || []).includes(action?.addon));
+}
+
+/* Whether a field's text may go to be improved: {ok, reason}. */
+export function assistCheck(text) {
+  if (!String(text || "").trim()) return { ok: false, reason: STRINGS.nothingToImprove };
+  if (text.length > ASSIST_MAX) return { ok: false, reason: STRINGS.tooLongToImprove };
+  return { ok: true, reason: "" };
 }
 
 /* Whether a turn runs, as the status says. */
