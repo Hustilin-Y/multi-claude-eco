@@ -612,6 +612,7 @@ relay_deploy() {
     cd "$ROOT/relay" || exit 1
     CLOUDFLARE_API_TOKEN=$(jq -r .api_token "$cf"); export CLOUDFLARE_API_TOKEN
     export CLOUDFLARE_ACCOUNT_ID=$account WRANGLER RELAY_HOST=$host
+    relay_addon_files || exit 1
     npx --yes "$WRANGLER" deploy "${vars[@]}" || exit 1
     jq -r .relay_token "$RELAY_SETTINGS" | npx --yes "$WRANGLER" secret put RELAY_TOKEN || exit 1
     printf '%s' "$key" | npx --yes "$WRANGLER" secret put TELEGRAM_WEBAPP_KEY || exit 1
@@ -620,6 +621,19 @@ relay_deploy() {
   update_json "$RELAY_SETTINGS" --arg u "wss://$host/queue" '.relay_url = $u'
   echo "The relay is live at https://$host."
   restart_router
+}
+
+# What the add-ins that are on serve on the Mini App's page (addons/<name>/relay-public/, such as a
+# chat tab's module), copied to relay/public/app/addons/<name>/ for the deploy to upload, before it
+# runs: an add-in's relay-deploy runs after it, too late for files. An add-in that's off has nothing
+# there. Everything there is public, so it holds no secrets or addresses.
+relay_addon_files() {
+  local served="$ROOT/relay/public/app/addons" name
+  rm -rf "$served"
+  for name in $(enabled_addons); do
+    [ -d "$ROOT/addons/$name/relay-public" ] || continue
+    mkdir -p "$served/$name" && cp -R "$ROOT/addons/$name/relay-public/." "$served/$name/" || return 1
+  done
 }
 
 # The key Telegram signs the control panel's init data with: HMAC-SHA256 of the bot token, keyed

@@ -12,3 +12,4 @@ __pycache__/
 .ruff_cache/
 node_modules/
 relay/.wrangler/
+relay/public/app/addons/

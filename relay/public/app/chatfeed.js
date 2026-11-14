@@ -59,13 +59,20 @@ export const STRINGS = {
   modelHints: { opus: "most capable", sonnet: "fast and capable", haiku: "fastest, cheapest", fable: "Fable" },
   effortHints: { low: "quick answers", medium: "balanced", high: "thorough", xhigh: "more thorough",
     max: "deepest; this session only" },
+  claudeGroup: "Claude",
+  toTarget: (label) => `to ${label}`,
+  stopped: "stopped",
+  newThread: (label) => `Start a new chat with ${label}? Only its own thread is forgotten; the assistant's conversation stays.`,
+  actions: "Actions",
+  fill: "Put in the message box",
+  targetGone: "That model isn't offered any more; messages go to the assistant again.",
 };
 
 const DELIVERY = { failed: 0, sending: 1, queued: 2, delivered: 3 };
 const BUSY = new Set(["waking", "thinking", "tool", "waiting_approval"]);
 
 export function newConversation() {
-  return { items: [], lastSeq: 0, status: null, settings: null, cursor: undefined };
+  return { items: [], lastSeq: 0, status: null, settings: null, cursor: undefined, targets: {}, addonStates: {} };
 }
 
 /* Whether events (as they came, oldest first) skip a seq after last, the one the page had: they're
@@ -99,7 +106,11 @@ function take(conversation, event) {
       conversation.cursor = null;
       return;
     case "status":
-      conversation.status = event;
+      if (event.target) conversation.targets[event.target] = event;  // a model another add-in brings
+      else conversation.status = event;
+      return;
+    case "addon_state":
+      conversation.addonStates[event.addon] = event.state;  // the newest only, for the add-in's tab
       return;
     case "settings":
       conversation.settings = event;
@@ -159,6 +170,42 @@ export function composerCheck(text) {
   const counter = length >= COUNTER_FROM ? STRINGS.counter(length) : "";
   if (length > TEXT_MAX) return { ok: false, counter, reason: STRINGS.tooLong(length) };
   return { ok: text.trim().length > 0, counter, reason: "" };
+}
+
+/* Whether a target's answer is coming, as its add-in's status says. */
+export function targetBusy(conversation, target) {
+  const status = target && conversation.targets[target];
+  return Boolean(status && status.state && status.state !== "idle");
+}
+
+/* The status line for a target: its add-in's own words, with the time. */
+export function targetStatusText(status, now = Date.now()) {
+  if (!status || !status.state || status.state === "idle") return "";
+  const seconds = status.since ? Math.max(0, Math.round((now - Date.parse(status.since)) / 1000)) : null;
+  return `${status.text || STRINGS.status.thinking}${seconds == null ? "" : ` ${elapsed(seconds)}`}`;
+}
+
+/* An action's text: its template with "{name}" filled from the form's values. A switch fills in its
+ * "on" or "off" words. Nothing is sent: the person reads it first. */
+export function fillTemplate(action, values) {
+  const fields = Object.fromEntries((action.form || []).map((field) => [field.name, field]));
+  return String(action.template || "").replace(/\{(\w+)\}/g, (_, name) => {
+    const field = fields[name];
+    const value = values[name];
+    if (field?.type === "switch") return value ? field.on ?? "" : field.off ?? "";
+    return value == null ? "" : String(value);
+  }).trim();
+}
+
+/* The models the sheet lists, in groups: Claude's first, then each group another add-in brings. */
+export function modelGroups(claudeModels, extra = []) {
+  const groups = [{ title: STRINGS.claudeGroup, models: claudeModels.map((id) => ({ id, label: id })) }];
+  for (const model of extra) {
+    let group = groups.find((g) => g.title === model.group);
+    if (!group) groups.push(group = { title: model.group, models: [] });
+    group.models.push(model);
+  }
+  return groups;
 }
 
 /* Whether a turn runs, as the status says. */

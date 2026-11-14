@@ -7,7 +7,28 @@ tg passes what it sent on (tg_sent) to the outbox here, and the feed (feed.py) s
 with the assistant's work steps from its transcript, while the page is open.
 
 Files: state/chat/outbox/<name>.jsonl (what tg sent), state/chat/seen/<name> (the Mini App messages
-taken in the last day, so a retry isn't run twice), state/chat/<name>.seq (files.py, feed.py)."""
+taken in the last day, so a retry isn't run twice), state/chat/<name>.seq (files.py, feed.py).
+
+Other add-ins may extend the chat, as add-ins offer hooks to each other (addons/__init__.py). The chat
+asks the add-ins that are on, by these names, and knows each add-in only by the name it's on under:
+- chat_tabs(user) -> [{"id", "title"}]: tabs after Chat and Panel; the page loads the add-in's
+  addons/<name>/tab.js (from its relay-public/ folder, which `assistant relay deploy` uploads), an ES
+  module exporting mount(root, api). Public: no secrets or addresses in it.
+- chat_models(user) -> [{"id", "label", "hint", "group", "badge"}]: more models in the model sheet. Picking
+  one makes "<name>:<id>" the composer's target.
+- chat_actions(user) -> [{"id", "label", "icon", "template", "form": [{"name", "label", "type": "select",
+  "text", "textarea" or "switch", "options", "default", "on", "off"}]}]: forms behind the composer's ⚡
+  chip; the page fills the composer from template ("{field}" for each field) and sends nothing.
+- chat_message(user, target, text, client_id) -> bool: a message the person sent to one of the
+  add-in's targets, after every check a message gets; True once taken. It never reaches the
+  assistant, the transcript or the Telegram chat. "/clear" sent to a target comes here too.
+- chat_stop(user, target): Stop while that target answers.
+- chat_backfill(user) -> [event]: the add-in's own events for a page that opens.
+is_open(user) says whether the person's page reads the feed now, and feed_add(user, event) puts an
+add-in's event on an open page: "model_message" (key, model,
+markdown, done, meta), "addon_state" (addon, state; the page's tab for that add-in gets it, the
+newest only; at most ADDON_STATE_MAX bytes) or "status" with a target and a text. The hooks run on
+the router's loop (tabs, models and actions every EXTRAS_EVERY), so they keep what's slow to get."""
 import json
 import os
 import re
@@ -27,6 +48,9 @@ TEXT_MAX = 16_000                          # characters of a message, as the pag
 SEND_SIGNED_WITHIN = 3600                  # a message's init data was signed at most this before the relay queued it
 QUEUED_WITHIN = 24 * 3600                  # and the relay queued it at most this long ago
 CLOCK_SKEW = 300
+TARGET_RE = re.compile(r"[a-z0-9][a-z0-9-]*:[\w.:-]{1,80}")  # "<add-in>:<its own id>"
+ADDON_STATE_MAX = 64 * 1024                # bytes of an add-in's state for its tab
+NOT_AVAILABLE = "That model isn't available now."
 MEMBERS_EVERY = 10 * 60                    # the members list is put again this often, in case the relay lost it
 MEMBERS_RETRY = 30
 CHAT_COMMAND_RE = re.compile(r"/chat(@\w+)?")
@@ -191,8 +215,15 @@ def take_message(desk, payload, now=None):
             or len(text) > TEXT_MAX:
         log(f"{user.name}: a chat message that isn't one; dropped")
         return
+    target = payload.get("target")
+    if target is not None and not TARGET_RE.fullmatch(str(target)):
+        log(f"{user.name}: a chat message to {target!r}, which is no target; dropped")
+        return
     if not files.take_message(user.name, client_id, now):
         log(f"{user.name}: chat message {client_id} came again; it was taken already")
+        return
+    if target:
+        to_target(user, target, text, client_id, now)
         return
     from multiclaude.channels import TelegramChat
     from multiclaude.router import inbound
@@ -209,6 +240,87 @@ def take_message(desk, payload, now=None):
     log(f"{user.name}: chat message {client_id} ({len(text)} characters)")
     msg = inbound.Inbound(user.chat_id, user.chat_id, msg_id, text, {"ts": events.iso(now)}, app=APP)
     desk.dispatch(user, msg, now)
+
+
+def to_target(user, target, text, client_id, now):
+    """A message to an add-in's target (X3): to that add-in, never to the assistant: no copy in the
+    Telegram chat, no Inbound, nothing woken. Stop goes to chat_stop instead (X6)."""
+    feed, name = feed_of(user), target.split(":", 1)[0]
+    feed.message_came(now, wake=False)
+    if text.strip() == "/stop":
+        log(f"{user.name}: stop for {target}")
+        offer(name, "chat_stop", user, target)
+        return
+    if not is_command(text):
+        feed.add({"kind": "user_message", "key": f"u:c{client_id}", "ts": events.iso(now), "client_id": client_id,
+                  "text": text, "source": "miniapp", "target": target, "state": "delivered"}, now)
+    log(f"{user.name}: chat message {client_id} for {target} ({len(text)} characters)")
+    if not offer(name, "chat_message", user, target, text, client_id):
+        feed.add({"kind": "notice", "key": f"n:{client_id}", "ts": events.iso(now), "text": NOT_AVAILABLE}, now)
+
+
+# --- what other add-ins bring to the chat ---
+
+def addon_name(module):
+    return module.__name__.rsplit(".", 1)[-1].replace("_", "-")
+
+
+def offered(hook, *args):
+    """(add-in, what it gave) for each add-in that's on and offers hook; one that fails is logged."""
+    from multiclaude import addons
+    found = []
+    for module in addons.active():
+        fn = getattr(module, hook, None)
+        if fn is None:
+            continue
+        try:
+            found.append((addon_name(module), fn(*args)))
+        except Exception as e:  # noqa: BLE001 — an add-in never breaks the chat
+            log(f"chat: {addon_name(module)}'s {hook} failed: {e!r}")
+    return found
+
+
+def offer(name, hook, *args):
+    """What the add-in called name gives for hook, if it's on and offers it; else None."""
+    return next((given for addon, given in offered(hook, *args) if addon == name), None)
+
+
+def extras(user):
+    """The tabs, models and actions the add-ins that are on bring to user's chat (X1, X2, X5)."""
+    def listed(hook):
+        return [(name, item) for name, items in offered(hook, user) for item in items or []
+                if isinstance(item, dict) and item.get("id")]
+    return {"tabs": [{"id": f"{name}:{t['id']}", "title": str(t.get("title") or t["id"]), "addon": name,
+                      "module": f"addons/{name}/tab.js"} for name, t in listed("chat_tabs")],
+            "models": [{"target": f"{name}:{m['id']}", "label": str(m.get("label") or m["id"]),
+                        "hint": m.get("hint") or "", "group": m.get("group") or name, "badge": m.get("badge") or ""}
+                       for name, m in listed("chat_models")],
+            "actions": [{**a, "id": f"{name}:{a['id']}", "addon": name} for name, a in listed("chat_actions")]}
+
+
+def backfilled(user):
+    """The add-ins' own events for a page that opens (chat_backfill)."""
+    return [event for _, given in offered("chat_backfill", user) for event in given or [] if isinstance(event, dict)]
+
+
+def is_open(user):
+    """For other add-ins: whether user's page reads the feed now, so there's someone to build for."""
+    feed = _feeds.get(user.name)
+    return bool(feed and feed.user is user and feed.watching(time.time()))
+
+
+def feed_add(user, event):
+    """For other add-ins: put event on user's page while it's open (see above). Whether it went."""
+    kind = event.get("kind")
+    if kind not in ("model_message", "addon_state", "status") or kind == "status" and not event.get("target"):
+        raise ValueError(f"chat: an add-in may add model_message, addon_state or a target's status, not {kind}")
+    if kind == "addon_state" and len(json.dumps(event, ensure_ascii=False).encode()) > ADDON_STATE_MAX:
+        log(f"{user.name}: {event.get('addon')}'s state for the chat is over {ADDON_STATE_MAX} bytes; left out")
+        return False
+    if not is_open(user):
+        return False
+    _feeds[user.name].add(event)
+    return True
 
 
 def signed_recently(payload, now):

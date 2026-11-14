@@ -278,3 +278,30 @@ test("while the chat add-in is off, its routes aren't there", async (t) => {
   assert.equal((await send(env)).status, 404);
   assert.equal((await relay.fetch(fromVm("members", { ids: [] }), env)).status, 404);
 });
+
+test("a message to another add-in's model carries its target; anything that isn't one is turned away", async (t) => {
+  // [AC-X3] The same checks as any message: signature, members, rate, then the router's.
+  const { vm, env } = await chatRelay(t);
+  assert.equal((await send(env, "hi", { extra: { target: "ext:m1" } })).status, 202);
+  assert.equal(sentChats(vm)[0].payload.target, "ext:m1");
+  assert.equal((await send(env, "hi", { clientId: "1c0a4d3f-6e5b-4d2c-8f9a-8b7c6d5e4f30", extra: { target: "../x" } })).status, 400);
+  assert.equal((await send(env, "hi", { initData: signed({ id: STRANGER }), extra: { target: "ext:m1" } })).status, 403);
+  assert.equal(sentChats(vm).length, 1);
+});
+
+test("an add-in's state for its tab is kept once per add-in, the newest, up to 64 KB", async (t) => {
+  // [AC-X4]
+  const { queue, env } = await chatRelay(t);
+  const state = (seq, runs) => ({ seq, kind: "addon_state", addon: "ext", at: "x", state: { runs } });
+  await relay.fetch(fromVm(String(ALICE), { events: [event(1), state(2, ["a"]), event(3), state(4, ["b".repeat(40_000)])] }), env);
+
+  const first = await (await relay.fetch(fromPage("feed", signed(), { after: 0 }), env)).json();
+  assert.deepEqual(first.events.map((e) => e.seq), [1, 3, 4]);
+  assert.equal(first.events[2].state.runs[0].length, 40_000);
+  const later = queue.chat.events(String(ALICE), 3);
+  assert.deepEqual(later.map((body) => JSON.parse(body).seq), [4]);
+
+  t.mock.method(console, "warn", () => {});
+  await relay.fetch(fromVm(String(ALICE), { events: [state(5, ["c".repeat(70_000)])] }), env);
+  assert.equal(JSON.parse(queue.chat.events(String(ALICE), 0).at(-1)).seq, 4);
+});

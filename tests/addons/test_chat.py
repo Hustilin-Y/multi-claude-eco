@@ -693,3 +693,142 @@ def test_slash_chat_offers_a_button_that_opens_it(r, desk, chat):
     (button,) = call["reply_markup"]["inline_keyboard"][0]
     assert button["web_app"]["url"] == "https://relay.test/app/?tab=chat"
     assert desk.users["alice"].queue == []
+
+
+# --- what other add-ins bring to the chat (X1–X6) -------------------------------------------------
+
+class Ext:
+    """A stand-in add-in "ext" that extends the chat, recording what reaches it."""
+
+    def __init__(self):
+        self.__name__ = "multiclaude.addons.ext"
+        self.messages, self.stops = [], []
+        self.takes = True
+
+    def chat_tabs(self, user):
+        return [{"id": "runs", "title": "Runs"}]
+
+    def chat_models(self, user):
+        return [{"id": "m1", "label": "Model One", "hint": "free", "group": "Elsewhere", "badge": "free"}]
+
+    def chat_actions(self, user):
+        return [{"id": "launch", "label": "Launch", "template": "/go {what}",
+                 "form": [{"name": "what", "type": "text"}]}]
+
+    def chat_message(self, user, target, text, client_id):
+        self.messages.append((user.name, target, text, client_id))
+        return self.takes
+
+    def chat_stop(self, user, target):
+        self.stops.append((user.name, target))
+
+    def chat_backfill(self, user):
+        return [{"kind": "model_message", "key": "ext:old", "ts": "2026-11-14T09:00:00.000Z", "target": "ext:m1",
+                 "markdown": "an earlier answer", "done": True}]
+
+
+@pytest.fixture
+def ext(r, chat, monkeypatch):
+    """The stand-in add-in on, next to the chat."""
+    from multiclaude import addons
+    fake = Ext()
+    real = addons._module
+    monkeypatch.setattr(addons, "ALL", (*addons.ALL, "ext"))
+    monkeypatch.setattr(addons, "_module", lambda name: fake if name == "ext" else real(name))
+    write_json(r.paths.CONFIG, {"addons": ["chat", "ext"]})
+    return fake
+
+
+def test_an_add_ins_tabs_models_and_actions_are_in_the_settings(r, desk, chat, ext):
+    """[AC-X1, AC-X2, AC-X5]"""
+    session_transcript(r, desk.users["alice"])
+    open_page(desk, chat)
+
+    (settings,) = shown(chat, "settings")
+    assert settings["tabs"] == [{"id": "ext:runs", "title": "Runs", "addon": "ext", "module": "addons/ext/tab.js"}]
+    assert settings["models"] == [{"target": "ext:m1", "label": "Model One", "hint": "free", "group": "Elsewhere",
+                                   "badge": "free"}]
+    assert [(a["id"], a["template"]) for a in settings["actions"]] == [("ext:launch", "/go {what}")]
+
+
+def test_with_the_add_in_off_the_chat_offers_none_of_it(r, desk, chat):
+    """[AC-X1]"""
+    session_transcript(r, desk.users["alice"])
+    open_page(desk, chat)
+
+    (settings,) = shown(chat, "settings")
+    assert (settings["tabs"], settings["models"], settings["actions"]) == ([], [], [])
+
+
+def test_a_message_to_a_target_goes_to_its_add_in_and_not_the_assistant(r, desk, chat, ext):
+    """[AC-X3] Checked like any message, then no copy in the DM, no Inbound, nothing woken."""
+    alice = desk.users["alice"]
+    session_transcript(r, alice)
+    r.asleep.mark("alice")
+    open_page(desk, chat)
+    desk.relay_inbound(message("hi there", target="ext:m1"))
+    desk.relay_inbound(message("hi there", target="ext:m1"))  # a retry
+    chat.on_tick(desk, time.time())
+
+    assert ext.messages == [("alice", "ext:m1", "hi there", CID)]
+    assert alice.queue == [] and dm_copies(r) == [] and r.asleep.marked("alice")
+    (mine,) = shown(chat, "user_message")
+    assert (mine["target"], mine["text"]) == ("ext:m1", "hi there")
+    assert shown(chat, "notice") == []
+
+
+def test_a_target_nobody_takes_says_so(r, desk, chat, ext):
+    """[AC-X3]"""
+    session_transcript(r, desk.users["alice"])
+    open_page(desk, chat)
+    ext.takes = False
+    desk.relay_inbound(message("hello", target="ext:m1"))
+    desk.relay_inbound(message("hello", client_id=OTHER_CID, target="gone:m2"))
+    chat.on_tick(desk, time.time())
+
+    assert [e["text"] for e in shown(chat, "notice")] == ["That model isn't available now."] * 2
+    assert desk.users["alice"].queue == []
+
+
+def test_a_message_signed_long_ago_doesnt_reach_a_target_either(r, desk, chat, ext):
+    """[AC-X3] The same checks as any message."""
+    now = time.time()
+    desk.relay_inbound(message("late", target="ext:m1", signed_at=now - 2 * 3600, queued_at=now))
+    desk.relay_inbound(message("odd", client_id=OTHER_CID, target="../etc"))
+
+    assert ext.messages == []
+
+
+def test_stop_with_a_target_stops_that_add_ins_answer(r, desk, chat, ext):
+    """[AC-X6]"""
+    alice = desk.users["alice"]
+    alice.turn.busy = True
+    desk.relay_inbound(message("/stop", target="ext:m1"))
+
+    assert ext.stops == [("alice", "ext:m1")]
+    assert not alice.stop_requested and ext.messages == []
+
+
+def test_an_add_ins_events_reach_the_open_page_and_its_backfill(r, desk, chat, ext, capsys):
+    """[AC-X4]"""
+    alice = desk.users["alice"]
+    session_transcript(r, alice)
+    assert chat.feed_add(alice, {"kind": "model_message", "key": "ext:1", "markdown": "x", "done": False}) is False
+    assert not chat.is_open(alice)
+    open_page(desk, chat)
+    assert chat.is_open(alice)
+    assert chat.feed_add(alice, {"kind": "model_message", "key": "ext:1", "ts": "2026-11-14T10:00:00.000Z",
+                                 "target": "ext:m1", "markdown": "Hel", "done": False})
+    assert chat.feed_add(alice, {"kind": "addon_state", "addon": "ext", "state": {"runs": []}})
+    assert chat.feed_add(alice, {"kind": "status", "target": "ext:m1", "state": "running", "text": "Loading the model…"})
+    assert not chat.feed_add(alice, {"kind": "addon_state", "addon": "ext", "state": {"big": "x" * 70_000}})
+    with pytest.raises(ValueError):
+        chat.feed_add(alice, {"kind": "assistant_message", "markdown": "pretending"})
+    chat.on_tick(desk, time.time())
+
+    kinds = [(e["kind"], e.get("key") or e.get("addon") or e.get("target")) for e in feed_events(chat)
+             if e["kind"] in ("model_message", "addon_state") or e.get("target")]
+    assert kinds == [("model_message", "ext:old"), ("model_message", "ext:1"), ("addon_state", "ext"),
+                     ("status", "ext:m1")]
+    assert all(e["seq"] for e in feed_events(chat))
+    assert "over 65536 bytes; left out" in capsys.readouterr().err

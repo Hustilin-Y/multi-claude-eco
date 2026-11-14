@@ -6,7 +6,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { gzipSync } from "node:zlib";
 
-import { STRINGS, addOlder, apply, composerCheck, enterSends, hasGap, localMessage, newConversation, setState, statusText,
+import { STRINGS, addOlder, apply, composerCheck, enterSends, fillTemplate, hasGap, localMessage, modelGroups, newConversation,
+  setState, statusText, targetBusy, targetStatusText,
   switchOutcome } from "../public/app/chatfeed.js";
 import { highlight } from "../public/app/highlight.js";
 
@@ -133,4 +134,38 @@ test("the page weighs under 300 KB gzipped, Telegram's script aside", () => {
   walk(APP);
   const weight = files.reduce((sum, path) => sum + gzipSync(readFileSync(path)).length, 0);
   assert.ok(weight < 300 * 1024, `${weight} bytes`);
+});
+
+test("an action's form fills its template, a switch with its words, and nothing else", () => {
+  // [AC-X5]
+  const action = { template: "/go {pipeline} in {repo}: {task}. {private}",
+    form: [{ name: "pipeline" }, { name: "repo" }, { name: "task", type: "textarea" },
+      { name: "private", type: "switch", on: "Private.", off: "Not private." }] };
+  assert.equal(fillTemplate(action, { pipeline: "review", repo: "~/x", task: "look", private: false }),
+    "/go review in ~/x: look. Not private.");
+  assert.equal(fillTemplate(action, { pipeline: "review", repo: "~/x", task: "look", private: true }),
+    "/go review in ~/x: look. Private.");
+});
+
+test("the model sheet lists Claude's models first, then each add-in's group", () => {
+  // [AC-X2]
+  const groups = modelGroups(["opus", "sonnet"], [{ target: "ext:a", label: "A", group: "Elsewhere" },
+    { target: "ext:b", label: "B", group: "Elsewhere" }, { target: "other:c", label: "C", group: "Other" }]);
+  assert.deepEqual(groups.map((g) => [g.title, g.models.length]), [["Claude", 2], ["Elsewhere", 2], ["Other", 1]]);
+});
+
+test("a target's status and an add-in's state are kept apart from the assistant's", () => {
+  // [AC-X4, AC-X6]
+  const conversation = newConversation();
+  const since = "2026-11-14T10:00:00.000Z";
+  apply(conversation, [{ seq: 1, kind: "status", state: "idle", since },
+    { seq: 2, kind: "status", target: "ext:m1", state: "running", text: "Loading the model…", since },
+    { seq: 3, kind: "addon_state", addon: "ext", state: { runs: [1] } },
+    { seq: 4, kind: "model_message", key: "ext:1", target: "ext:m1", markdown: "Hel", done: false, ts: since }], true);
+  apply(conversation, [{ seq: 5, kind: "model_message", key: "ext:1", target: "ext:m1", markdown: "Hello", done: true, ts: since }]);
+  assert.equal(conversation.status.state, "idle");
+  assert.equal(targetBusy(conversation, "ext:m1"), true);
+  assert.equal(targetStatusText(conversation.targets["ext:m1"], Date.parse(since) + 5000), "Loading the model… 5s");
+  assert.deepEqual(conversation.addonStates.ext, { runs: [1] });
+  assert.deepEqual(conversation.items.map((i) => [i.key, i.markdown, i.done]), [["ext:1", "Hello", true]]);
 });

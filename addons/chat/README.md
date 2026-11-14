@@ -25,6 +25,21 @@ To try it out with some people first, give them `"chat_beta": true` in `users.js
 - **Secrets:** tool inputs and results are masked over their whole text (values after `token=`, `password:` and the like, bearer tokens, `sk-` keys, JWTs, PEM blocks), then trimmed (500 characters of input, 2 KB of result). A step that reads or writes a file whose name says it holds secrets (`.env*`, `*credential*`, `*secret*`, `id_*`, `*.pem`, `*.key`, `~/.claude/channels/`) shows no result, and a write no input either. A command that prints a secret without naming such a file is caught only by the patterns.
 - **The relay keeps** each person's last 200 events for a day, as a cache: a backfill replaces them, and `/clear` drops them. Thinking is never shown.
 
+## Extending it from another add-in
+
+The chat asks the add-ins that are on for these hooks, as add-ins offer hooks to each other, and knows each only by the name it's on under. The chat names no other add-in.
+
+| Hook | Gives | The page |
+| --- | --- | --- |
+| `chat_tabs(user)` | `[{"id", "title"}]` | A tab after Chat and Panel, which loads the add-in's `addons/<name>/tab.js` and calls its `mount(root, api)`: `api.onState(fn)` hears the add-in's state, `api.fill(text)` puts text in the composer (it never sends), `api.toast`, `api.el`, `api.markdown`. The file comes from the add-in's `relay-public/` folder, which `assistant relay deploy` uploads: it's public, so it holds no secrets or addresses, and data reaches it only through the signed feed |
+| `chat_models(user)` | `[{"id", "label", "hint", "group", "badge"}]` | More models in the model sheet, under their group. Picking one makes `"<name>:<id>"` the composer's target (kept per device); a Claude model sets it back to the assistant |
+| `chat_message(user, target, text, client_id)` | `True` once taken | A message to the target goes to that add-in after the same checks as any message (signature at most an hour old when queued, members, rate, the client id taken once). No 💬 copy, no Inbound, nothing woken. Nobody taking it: a line "That model isn't available now." New chat with a target sends it `/clear`, for its own thread |
+| `chat_stop(user, target)` | | Stop while the target answers |
+| `chat_actions(user)` | `[{"id", "label", "icon", "template", "note", "form": [{"name", "label", "type", "options", "default", "on", "off"}]}]` | The ⚡ chip lists them; a form (`select`, `text`, `textarea`, `switch`) fills the composer from `template` (`{name}` for each field; a switch puts in its `on` or `off` words) and sends nothing |
+| `chat_backfill(user)` | `[event]` | The add-in's own events when a page opens |
+
+`chat.is_open(user)` says whether the person's page reads the feed now (so an add-in builds nothing for a closed one), and `chat.feed_add(user, event)` puts an add-in's event on the person's open page (False when it's closed): `model_message` (`key`, `ts`, `target`, `markdown`, `done`, `meta` with `answered`, `tokens`, `seconds`, `stopped`, `error`), shown like an answer under the model's name and badge; `addon_state` (`addon`, `state`), at most 64 KB, kept by the relay once per add-in, the newest, for that add-in's tab; or `status` with a `target`, `state` (`running` or `idle`), `text` and `since`, which the status line shows while that target is chosen. The tabs, models and actions are asked for every 30 seconds while the page is open, on the router's loop: a hook keeps what's slow to get.
+
 ## Memory
 
 The machine has little to spare, so nothing reads a whole file: a backfill or a history request reads at most 3 MB of transcript and 1 MB of outbox from where it should end, skipping any line over 256 KB (a pasted picture) unread, and keeps only the newest 200 events of a window while it reads. At most 200 events wait for the relay per person; when it's unreachable the oldest go, and the page, seeing the gap in their numbers, reads the feed afresh.
@@ -33,7 +48,7 @@ The machine has little to spare, so nothing reads a whole file: a backfill or a 
 
 - `lib/multiclaude/addons/chat/`: `__init__.py` (the hooks, messages from the page, the members list), `feed.py` (following a person's conversation and putting it on the relay), `events.py` (transcript entries and outbox records as feed events, masking), `files.py` (the outbox, the messages taken, reading in windows).
 - `relay/src/chat.js`: the relay's routes and what the Durable Object keeps.
-- `relay/public/app/`: `chat.js` (the tab), `chatfeed.js` (its state and strings), `markdown.js`, `highlight.js`, `chat.css`, and in `vendor/` marked and DOMPurify.
+- `relay/public/app/`: `chat.js` (the tab, and other add-ins' tabs, models and actions), `chatfeed.js` (its state and strings), `markdown.js`, `highlight.js`, `chat.css`, and in `vendor/` marked and DOMPurify.
 - State: `state/chat/outbox/`, `state/chat/seen/<name>` (the Mini App messages taken in the last day), `state/chat/<name>.seq` (the feed's last number).
 
 The full design, its acceptance criteria and its reviews are in `docs/chat-miniapp/`; what the implementation does differently is in `docs/chat-miniapp/IMPLEMENTATION-NOTES.md`.

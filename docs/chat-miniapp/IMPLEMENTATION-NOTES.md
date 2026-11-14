@@ -53,3 +53,19 @@ These rest on what Claude Code writes, which the tests stand in for:
 - Python (`tests/addons/test_chat.py`, 42 tests) and the relay (`relay/test/chat.test.js`, `relay/test/chatfeed.test.js`, 33 tests) cover the [auto] ACs of P0; the add-in's README lists the files.
 - `./check` was run in WSL (Ubuntu 24.04) on a copy of the worktree with LF line endings, since this checkout has CRLF and Windows can't import `fcntl`. It runs there as root, so `tests/test_shared.py::test_a_skill_copy_that_fails_halfway_leaves_nothing_behind` fails (a `chmod 0` file is still readable by root); it fails the same way without these changes.
 - The page was looked at in a browser with a stand-in for Telegram and the relay (desktop width and 320 px). It has not been tried in a real Telegram client yet: see the manual ACs.
+
+## Extension points for other add-ins, and the header fix (H1, X0–X6)
+
+Implemented 2026-11-14 from an addendum written for an add-in of the owner's own, its generic part only (IDs H1, X0–X6 are that addendum's); the chat names no other add-in.
+
+| # | Addendum | What the code does | Why |
+| --- | --- | --- | --- |
+| E1 | X1, X2, X5: `chat_tabs()`, `chat_models()`, `chat_actions()` | Each takes the person (`user`) | An add-in may offer different models to different people (a paid model only for some keys) |
+| E2 | X1: the page shows the tabs | The tabs come with the `settings` event, so they appear once the chat's feed has been read; opened on the Panel tab, they show after the Chat tab is opened | The page knows the add-ins' tabs only from the feed, which is read only while a feed tab shows |
+| E3 | X1–X6: "hook" | The chat asks the add-ins itself (`addons.active()`), not through `addons.call`, to know which add-in gave what: tab, model and action ids are namespaced `<add-in>:<id>`, and a target's message and Stop go to that add-in alone | The hook list in `addons/__init__.py` is the core's; these are the chat add-in's own, documented in its README and module |
+| E4 | X3: "/stop" for a target | A target's Stop is the page sending `/stop` with the target; New chat with a target sends `/clear` with it, which reaches `chat_message` | One route for everything the page sends, with every check |
+| E5 | X4: `addon_state` "replaced per add-in" | The relay keeps it in a table of its own, one row per person and add-in, and adds it to reads by seq; `cleared` leaves it | Kept among the 200 events, a few 64 KB states would push the conversation out |
+| E6 | X4: status with a target | `status` events with a `target` are kept apart from the assistant's; the status line, the Stop button and its spinner follow the chosen target's | So a model's own progress ("Loading the model…") can show while the assistant sleeps |
+| E7 | H1 | As the addendum says: in the chat and add-in tabs the body is a fixed flex column the viewport's height; the tab bar no longer sticks | — |
+
+Tested: `tests/addons/test_chat.py` (X1–X6 with a stand-in add-in), `tests/test_assistant_cli.py` (X0, `assistant relay deploy` with a fake wrangler), `relay/test/chat.test.js` and `relay/test/chatfeed.test.js`. H1 was checked in a browser at 360×720 (the header's top is the tab bar's bottom, the document doesn't scroll); on a phone it's still to be checked (AC-H1.1).

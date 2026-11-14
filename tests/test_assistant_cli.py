@@ -751,6 +751,43 @@ def test_relay_deploy_needs_the_cloudflare_token_first(home):
     assert r.returncode != 0 and "cloudflare.json" in r.stderr
 
 
+FAKE_CURL = """#!/bin/sh
+echo '{"result": {"subdomain": "ada"}}'
+"""
+FAKE_NPX = """#!/bin/sh
+# wrangler: on deploy, list what public/ would upload; a secret is read from stdin
+case "$*" in
+  *" deploy"*) (cd public && find . -type f | sort) > "$FAKE_CLAUDE_DIR/uploaded" ;;
+  *) cat >/dev/null ;;
+esac
+"""
+
+
+def test_relay_deploy_uploads_the_page_files_of_the_add_ins_that_are_on(home):
+    """[AC-X0] An add-in's relay-public/ goes up with the page; one turned off leaves nothing there."""
+    shutil.copytree(BIN.parent / "relay" / "public", home.root / "relay" / "public",
+                    ignore=shutil.ignore_patterns("addons"))
+    for program, script in (("curl", FAKE_CURL), ("npx", FAKE_NPX)):
+        (home.fake.bin / program).write_text(script)
+        (home.fake.bin / program).chmod(0o755)
+    (home.root / "state").mkdir()
+    (home.root / "state" / "cloudflare.json").write_text(json.dumps({"api_token": "t", "account_id": "a"}))
+    tab = home.root / "addons" / "chat" / "relay-public"
+    tab.mkdir()
+    (tab / "tab.js").write_text("export function mount() {}\n")
+    stale = home.root / "relay" / "public" / "app" / "addons" / "siri"
+    stale.mkdir(parents=True)
+    (stale / "old.js").write_text("")
+    (home.root / "config.json").write_text(json.dumps({"addons": ["chat"]}))
+
+    r = home.run("relay", "deploy")
+
+    assert r.returncode == 0, r.stderr
+    uploaded = (home.fake.home / "uploaded").read_text().splitlines()
+    assert "./app/addons/chat/tab.js" in uploaded and "./app/chat.js" in uploaded
+    assert not any("siri" in path for path in uploaded)
+
+
 # --- the backup add-in ---------------------------------------------------------------------------
 
 FAKE_RESTIC = """#!/bin/sh

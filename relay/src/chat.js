@@ -23,6 +23,7 @@ export const HISTORY_WAIT_FOR = 10 * 1000;       // ms a request for older histo
 export const EVENTS_KEPT = 200;                  // per person
 export const EVENTS_KEPT_FOR = 24 * 60 * 60 * 1000;
 export const EVENT_MAX = 16 * 1024;              // bytes of one event's JSON
+export const ADDON_STATE_MAX = 64 * 1024;        // and of an add-in's state for its tab, kept one per add-in
 export const BODY_MAX = 64 * 1024;               // bytes of a message the page posts
 export const TEXT_MAX = 16000;                   // characters of a message
 export const SENDS_PER_MINUTE = 20;
@@ -31,6 +32,7 @@ const KEEP_OPEN_EVERY = 60 * 1000;               // ms between the reads that te
 const PUT_MAX = 8 * 1024 * 1024;                 // bytes of what the VM puts at once
 const CUT_NOTE = "… (full text in Telegram)";
 const CLIENT_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const TARGET_RE = /^[a-z0-9][a-z0-9-]*:[\w.:-]{1,80}$/;  // "<add-in>:<its own id>": a model another add-in brings
 
 export const routes = [
   { method: "POST", path: "/app/chat/send", handle: send },
@@ -65,8 +67,9 @@ async function send(request, env) {
   return inObject(env, "send", user, { envelope: chatEnvelope(user, initData, message) });
 }
 
-/* {client_id, text} from what the page posted, or null. Anything else in it (a model, an effort) is
- * left behind: a message never switches settings. */
+/* {client_id, text, target?} from what the page posted, or null. target names a model another add-in
+ * brings, which the message goes to instead of the assistant. Anything else in it (a model, an
+ * effort) is left behind: a message never switches settings. */
 export function chatMessage(body) {
   let posted;
   try {
@@ -77,14 +80,16 @@ export function chatMessage(body) {
   const clientId = String(posted?.client_id || "");
   const text = posted?.text;
   if (!CLIENT_ID_RE.test(clientId) || typeof text !== "string" || !text.trim() || text.length > TEXT_MAX) return null;
-  return { client_id: clientId.toLowerCase(), text };
+  const target = posted?.target;
+  if (target != null && !(typeof target === "string" && TARGET_RE.test(target))) return null;
+  return { client_id: clientId.toLowerCase(), text, ...(target ? { target } : {}) };
 }
 
 /* The envelope that takes a message to the VM: one per person and message (a retry is the same one),
  * with the init data for the VM to check again and when it was queued. */
-export function chatEnvelope(user, initData, { client_id: clientId, text }, now = Date.now()) {
+export function chatEnvelope(user, initData, { client_id: clientId, text, target }, now = Date.now()) {
   return { envelope_id: `chat:${user}:${clientId}`, type: "chat",
-    payload: { init_data: initData, client_id: clientId, text, queued_at: now / 1000 } };
+    payload: { init_data: initData, client_id: clientId, text, ...(target ? { target } : {}), queued_at: now / 1000 } };
 }
 
 async function feed(request, env) {
@@ -176,6 +181,8 @@ export class ChatStore {
     this.sql.exec("CREATE TABLE IF NOT EXISTS chat_rate (user TEXT NOT NULL, minute INTEGER NOT NULL, count INTEGER NOT NULL, "
       + "PRIMARY KEY (user, minute))");
     this.sql.exec("CREATE TABLE IF NOT EXISTS chat_open (user TEXT PRIMARY KEY, told INTEGER NOT NULL)");
+    this.sql.exec("CREATE TABLE IF NOT EXISTS chat_slots (user TEXT NOT NULL, slot TEXT NOT NULL, seq INTEGER NOT NULL, "
+      + "body TEXT NOT NULL, kept INTEGER NOT NULL, PRIMARY KEY (user, slot))");
     this.waiting = new Set();  // reads waiting for newer events: {user, wake}
   }
 
@@ -216,11 +223,13 @@ export class ChatStore {
       { headers: { "content-type": "application/json" } });
   }
 
+  /* The events after seq after (the last BACKFILL for 0), with each add-in's latest state among them. */
   events(user, after) {
     const rows = after
-      ? this.sql.exec("SELECT body FROM chat_events WHERE user = ? AND seq > ? ORDER BY seq", user, after).toArray()
-      : this.sql.exec("SELECT body FROM chat_events WHERE user = ? ORDER BY seq DESC LIMIT ?", user, BACKFILL).toArray().reverse();
-    return rows.map((row) => row.body);
+      ? this.sql.exec("SELECT seq, body FROM chat_events WHERE user = ? AND seq > ? ORDER BY seq", user, after).toArray()
+      : this.sql.exec("SELECT seq, body FROM chat_events WHERE user = ? ORDER BY seq DESC LIMIT ?", user, BACKFILL).toArray().reverse();
+    const slots = this.sql.exec("SELECT seq, body FROM chat_slots WHERE user = ? AND seq > ?", user, after).toArray();
+    return [...rows, ...slots].sort((a, b) => a.seq - b.seq).map((row) => row.body);
   }
 
   /* The router follows a person's feed only while their page reads it: a "chat_open" envelope on
@@ -259,7 +268,13 @@ export class ChatStore {
       if (!event || !Number.isSafeInteger(event.seq) || event.seq <= 0) continue;
       if (event.kind === "cleared") this.sql.exec("DELETE FROM chat_events WHERE user = ? AND seq < ?", user, event.seq);
       const body = fitted(event);
-      if (body) this.sql.exec("INSERT OR REPLACE INTO chat_events (user, seq, body, kept) VALUES (?, ?, ?, ?)", user, event.seq, body, now);
+      if (!body) continue;
+      if (event.kind === "addon_state") {
+        this.sql.exec("INSERT OR REPLACE INTO chat_slots (user, slot, seq, body, kept) VALUES (?, ?, ?, ?, ?)",
+          user, String(event.addon || ""), event.seq, body, now);
+      } else {
+        this.sql.exec("INSERT OR REPLACE INTO chat_events (user, seq, body, kept) VALUES (?, ?, ?, ?)", user, event.seq, body, now);
+      }
     }
     this.sql.exec("DELETE FROM chat_events WHERE user = ? AND seq NOT IN "
       + "(SELECT seq FROM chat_events WHERE user = ? ORDER BY seq DESC LIMIT ?)", user, user, EVENTS_KEPT);
@@ -271,20 +286,24 @@ export class ChatStore {
 
   forgetOld(now = Date.now()) {
     this.sql.exec("DELETE FROM chat_events WHERE kept < ?", now - EVENTS_KEPT_FOR);
+    this.sql.exec("DELETE FROM chat_slots WHERE kept < ?", now - EVENTS_KEPT_FOR);
   }
 }
 
-/* An event's JSON, cut to EVENT_MAX: a long message's text is shortened with a note; anything else
- * that big is left out (null), with a warning in the Worker's log naming it, not what it holds. */
+/* An event's JSON, cut to EVENT_MAX (an add-in's state: ADDON_STATE_MAX): a long message's text is
+ * shortened with a note; anything else that big is left out (null), with a warning in the Worker's
+ * log naming it, not what it holds. */
 export function fitted(event) {
-  const body = cut(event);
-  if (body === null) console.warn(`chat: a ${event.kind} event (seq ${event.seq}) over ${EVENT_MAX} bytes was left out`);
+  const max = event.kind === "addon_state" ? ADDON_STATE_MAX : EVENT_MAX;
+  const body = cut(event, max);
+  if (body === null) console.warn(`chat: a ${event.kind} event (seq ${event.seq}) over ${max} bytes was left out`);
   return body;
 }
 
-function cut(event) {
+function cut(event, max) {
   let body = JSON.stringify(event);
-  if (bytes(body) <= EVENT_MAX) return body;
+  if (bytes(body) <= max) return body;
+  if (event.kind === "addon_state") return null;
   const field = ["markdown", "text"].find((name) => typeof event[name] === "string");
   if (!field) return null;
   let text = event[field];

@@ -283,8 +283,8 @@ def from_outbox(record, own_chat, names=None):
 
 def fit(event):
     """event cut to EVENT_MAX bytes of JSON: a long message's text (or a step's previews) shortened,
-    with a note where it was cut."""
-    if size(event) <= EVENT_MAX:
+    with a note where it was cut. An add-in's state for its tab is checked by its own limit (feed_add)."""
+    if event.get("kind") == "addon_state" or size(event) <= EVENT_MAX:
         return event
     event = dict(event)
     field = next((f for f in ("markdown", "text", "result_preview", "input_preview") if event.get(f)), None)

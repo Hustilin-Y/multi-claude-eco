@@ -30,6 +30,7 @@ PENDING_MAX = 200            # events waiting for the relay; older ones go first
 PUT_EVERY = 1.0              # seconds between PUTs while events come
 PUT_RETRY = 5.0              # after a PUT that failed
 LOOK_EVERY = 2.0             # seconds between looks at the status line (settings, the current transcript)
+EXTRAS_EVERY = 30.0          # and at what other add-ins bring to the chat (tabs, models, actions)
 RELAY_KEEPS = 24 * 3600      # the relay drops events this old, so after that it holds nothing to clear
 
 
@@ -73,6 +74,7 @@ class Feed:
         self.status = None                # (state, tool) last put
         self.settings = None
         self.next_look = 0.0
+        self.next_extras, self.extras = 0.0, {}  # what other add-ins bring (chat.extras)
         self.waking_since = None          # a message came for it asleep: "waking" until its transcript moves
 
     @property
@@ -104,7 +106,8 @@ class Feed:
                 self.outbox_at = files.size_of(files.outbox(self.name))
                 self.pending, self.status, self.settings = [], None, None
                 now = time.time()
-                for event in built:
+                from multiclaude.addons import chat
+                for event in merged(built + chat.backfilled(self.user)):
                     self.add(event, now)
                 self.add({"kind": "history", "cursor": cursor}, now)
                 self.look(now, force=True)
@@ -173,12 +176,15 @@ class Feed:
         if not force and now < self.next_look:
             return
         self.next_look = now + LOOK_EVERY
+        if force or now >= self.next_extras:
+            from multiclaude.addons import chat
+            self.next_extras, self.extras = now + EXTRAS_EVERY, chat.extras(self.user)
         snap = usage.snapshot(self.user) or {}
         model, effort = usage.model_and_effort(snap)
         _, _, percent = usage.context(snap)
         settings = {"model": model_alias(model), "model_name": model, "effort": effort,
                     "context_pct": None if percent is None else round(percent),
-                    "bot": bot.name(), "bot_username": config.read().get("username")}
+                    "bot": bot.name(), "bot_username": config.read().get("username"), **self.extras}
         if settings != self.settings:
             self.settings = settings
             self.add({"kind": "settings", **settings}, now)
@@ -202,12 +208,12 @@ class Feed:
             return ("tool", tool) if tool else ("thinking", None)
         return "idle", None
 
-    def message_came(self, now):
-        """A Mini App message was queued: follow the feed, and if the assistant sleeps, say it's
-        waking until its transcript moves."""
+    def message_came(self, now, wake=True):
+        """A Mini App message was queued: follow the feed, and if it's for the assistant (wake) and
+        the assistant sleeps, say it's waking until its transcript moves."""
         with self.lock:
             self.watching_until = max(self.watching_until, now + WATCH_FOR)
-            if self.user.asleep():
+            if wake and self.user.asleep():
                 self.waking_since = now
 
     def cleared(self, now, later):
@@ -330,8 +336,8 @@ def merged(built):
     """Events in the order they happened, each key once as it ended up (a step's result over its
     call, an edit over its message); edits of messages not in view are dropped."""
     by_key, order = {}, []
-    for event in sorted(built, key=lambda e: e.get("ts") or ""):
-        key = event.get("key")
+    for n, event in enumerate(sorted(built, key=lambda e: e.get("ts") or "")):
+        key = event.get("key") or f"#{n}"  # an event without a key (an add-in's state) stands alone
         if event["kind"] == "message_edited":
             if key in by_key:
                 by_key[key] = {**by_key[key], "markdown": event["markdown"], "copy": event["copy"]}

@@ -7,13 +7,19 @@
  *
  * The tab bar shows only while the chat add-in is on: the router's Chat button opens the page with
  * ?tab=chat, and the control panel's snapshot lists the add-ins that are on.
+ *
+ * Other add-ins may bring tabs (an ES module of theirs at addons/<add-in>/tab.js, given mount(root, api)),
+ * models (a message to one goes to that add-in, never to the assistant: the composer's target) and
+ * actions (a form that fills the composer), all listed in the settings event (chat add-in, X1–X6).
  */
-import { STOP_WITHIN, STRINGS, addOlder, apply, busy, composerCheck, enterSends, fileSize, localMessage, newConversation,
-  setState, sourceLabel, statusText, switchOutcome } from "./chatfeed.js";
+import { STOP_WITHIN, STRINGS, addOlder, apply, busy, composerCheck, enterSends, fileSize, fillTemplate, localMessage,
+  modelGroups, newConversation, setState, sourceLabel, statusText, switchOutcome, targetBusy, targetStatusText }
+  from "./chatfeed.js";
 import { render as renderMarkdown } from "./markdown.js";
 
 const tg = window.Telegram?.WebApp;
 const KEEP_KEY = "keep-switches";      // the Keep after restarts switch, shared with the control panel
+const TARGET_KEY = "chat-target";      // the model of another add-in messages go to, on this device
 const OFFLINE_AFTER = 30000;           // ms the VM has to be away before the page says it's offline
 const RETRY_FIRST = 1000;
 const RETRY_MAX = 30000;
@@ -34,6 +40,9 @@ let asked = {};                        // "model" | "effort" -> the value asked 
 let refused = {};                      // effort level -> the router's reason, for the model refusedFor
 let refusedFor = null;
 let loadingOlder = false;
+let target = stored(TARGET_KEY);       // "<add-in>:<id>" while messages go to another add-in's model, else null
+let currentTab = "panel";
+const addonTabs = new Map();           // tab id -> {tab, button, root, mounted, listeners, shown}
 let sheetClose = null;
 const timings = [];
 const shownHtml = new WeakMap();       // item -> [markdown, its HTML], so a message is rendered once
@@ -63,15 +72,80 @@ function enableChat(select) {
   showTab(select ? "chat" : "panel");
 }
 
+/* Chat, Panel, or an add-in's tab. Every tab but the Panel fills the screen and reads the feed. */
 function showTab(tab) {
-  const chat = tab === "chat";
-  $("chat").hidden = !chat;
-  $("panel").hidden = chat;
-  document.body.classList.toggle("in-chat", chat);
+  currentTab = tab;
+  $("chat").hidden = tab !== "chat";
+  $("panel").hidden = tab !== "panel";
+  for (const [id, entry] of addonTabs) entry.root.hidden = id !== tab;
+  document.body.classList.toggle("in-chat", tab !== "panel");
   for (const button of document.querySelectorAll("#tabs [data-tab]")) button.setAttribute("aria-selected", String(button.dataset.tab === tab));
-  if (chat) {
-    poll();
-    scrollToEnd();
+  if (addonTabs.has(tab)) mountTab(addonTabs.get(tab));
+  if (tab !== "panel") poll();
+  if (tab === "chat") scrollToEnd();
+}
+
+/* The tabs other add-ins bring, as the settings event lists them, after Chat and Panel. */
+function drawTabs() {
+  const listed = conversation.settings?.tabs || [];
+  for (const tab of listed) {
+    if (addonTabs.has(tab.id)) continue;
+    const button = el("button", { type: "button", role: "tab", onclick: () => showTab(tab.id) }, tab.title);
+    button.dataset.tab = tab.id;
+    const root = el("section", { className: "addon-tab", hidden: true });
+    $("tabs").append(button);
+    $("chat").after(root);
+    addonTabs.set(tab.id, { tab, button, root, mounted: false, listeners: [], shown: undefined });
+  }
+  for (const [id, entry] of addonTabs) {
+    if (listed.some((tab) => tab.id === id)) continue;
+    entry.button.remove();
+    entry.root.remove();
+    addonTabs.delete(id);
+    if (currentTab === id) showTab("chat");
+  }
+}
+
+/* An add-in's tab module, loaded from the relay the first time its tab shows: mount(root, api). It
+ * gets its add-in's state through api.onState and may fill the composer, never send. */
+async function mountTab(entry) {
+  if (entry.mounted) return;
+  entry.mounted = true;
+  const { addon } = entry.tab;
+  const api = {
+    onState(listener) {
+      entry.listeners.push(listener);
+      if (conversation.addonStates[addon] !== undefined) listener(conversation.addonStates[addon]);
+    },
+    fill(text) {
+      showTab("chat");
+      fillComposer(text);
+    },
+    toast,
+    el,
+    markdown: renderMarkdown,
+  };
+  try {
+    const module = await import(new URL(entry.tab.module, location.href).href);
+    module.mount(entry.root, api);
+  } catch (error) {
+    entry.root.replaceChildren(el("p", { className: "chat-refused" }, `This tab couldn't load (${error.message}).`));
+  }
+}
+
+/* Each add-in's tab hears its state when it changes. */
+function tellTabs() {
+  for (const entry of addonTabs.values()) {
+    const state = conversation.addonStates[entry.tab.addon];
+    if (state === undefined || state === entry.shown) continue;
+    entry.shown = state;
+    for (const listener of entry.listeners) {
+      try {
+        listener(state);
+      } catch (error) {
+        console.warn(`${entry.tab.addon}'s tab: ${error.message}`);
+      }
+    }
   }
 }
 
@@ -94,6 +168,7 @@ function setUp() {
     submit();
   });
   $("chip-model").addEventListener("click", () => pickSheet("model"));
+  $("chip-actions").addEventListener("click", actionsSheet);
   $("chip-effort").addEventListener("click", () => pickSheet("effort"));
   $("chat-new").addEventListener("click", confirmNewChat);
   $("chat-timings").addEventListener("click", showTimings);
@@ -150,7 +225,7 @@ async function poll() {
   let wait = RETRY_FIRST;
   let fresh = true;
   try {
-    while (!$("chat").hidden && !document.hidden) {
+    while (currentTab !== "panel" && !document.hidden) {
       try {
         const read = await relay("chat/feed", { after: fresh ? 0 : conversation.lastSeq });
         relayDown = false;
@@ -162,6 +237,7 @@ async function poll() {
         fresh = gap;
         afterEvents(read.events);
         draw();
+        tellTabs();
       } catch (error) {
         if (error instanceof Refused && [401, 403].includes(error.status)) {
           refusedPage(error);
@@ -203,8 +279,12 @@ function afterEvents(events) {
       }
     }
     if (event.kind === "cleared") $("chat-text").focus?.();
+    if (event.kind === "settings" && target && !(event.models || []).some((m) => m.target === target)) {
+      setTarget(null);  // its add-in no longer offers it
+      toast(STRINGS.targetGone);
+    }
   }
-  if (stopping && !busy(conversation.status)) stopDone();
+  if (stopping && !(target ? targetBusy(conversation, target) : busy(conversation.status))) stopDone();
 }
 
 /* --- sending --- */
@@ -215,6 +295,7 @@ function submit() {
   $("chat-text").value = "";
   composerChanged();
   const message = localMessage(crypto.randomUUID(), text);
+  if (target) message.target = target;
   conversation.items.push(message);
   draw();
   scrollToEnd();
@@ -225,7 +306,8 @@ async function send(message, wait = RETRY_FIRST) {
   setState(conversation, message.client_id, "sending");
   draw();
   try {
-    await relay("chat/send", { client_id: message.client_id, text: message.text });
+    await relay("chat/send", { client_id: message.client_id, text: message.text,
+      ...(message.target ? { target: message.target } : {}) });
     setState(conversation, message.client_id, "queued");
     timing("send → queued", Date.now() - message.sentAt);
   } catch (error) {
@@ -260,7 +342,7 @@ function stopTurn() {
     showError(STRINGS.couldntStop);
     draw();
   }, STOP_WITHIN) };
-  command("/stop");
+  command("/stop", target);  // with a target, its add-in stops it (chat_stop)
   draw();
 }
 
@@ -269,18 +351,20 @@ function stopDone() {
   stopping = null;
 }
 
-function command(text) {
-  relay("chat/send", { client_id: crypto.randomUUID(), text }).catch((error) => {
+function command(text, to = null) {
+  relay("chat/send", { client_id: crypto.randomUUID(), text, ...(to ? { target: to } : {}) }).catch((error) => {
     showError(error instanceof Refused && error.error === "reopen" ? STRINGS.reopen : STRINGS.relayOffline);
   });
 }
 
+/* New chat: /clear for the assistant, or, with another add-in's model chosen, that model's thread only. */
 function confirmNewChat() {
+  const to = target;
   openSheet(STRINGS.newChat, [
-    el("p", { className: "sheet-text" }, STRINGS.newChatAsk),
+    el("p", { className: "sheet-text" }, to ? STRINGS.newThread(targetLabel(to)) : STRINGS.newChatAsk),
     el("button", { className: "sheet-button destructive", onclick: () => {
       closeSheet();
-      command("/clear");
+      command("/clear", to);
     } }, STRINGS.newChat),
     el("button", { className: "sheet-button", onclick: closeSheet }, STRINGS.cancel),
   ]);
@@ -301,11 +385,35 @@ function options(setting) {
 }
 
 function storedKeep() {
+  return stored(KEEP_KEY) === "true";
+}
+
+function stored(key) {
   try {
-    return localStorage.getItem(KEEP_KEY) === "true";
+    return localStorage.getItem(key);
   } catch {
-    return false;
+    return null;
   }
+}
+
+/* Messages go to model, another add-in's ("<add-in>:<id>"), or to the assistant (null). */
+function setTarget(model) {
+  target = model;
+  try {
+    if (model) localStorage.setItem(TARGET_KEY, model);
+    else localStorage.removeItem(TARGET_KEY);
+  } catch {
+    // storage is off: it holds while the page is open
+  }
+  draw();
+}
+
+function targetModel(id) {
+  return (conversation.settings?.models || []).find((m) => m.target === id);
+}
+
+function targetLabel(id) {
+  return targetModel(id)?.label || id.split(":").slice(1).join(":");
 }
 
 function storeKeep(on) {
@@ -325,17 +433,30 @@ function pickSheet(setting) {
     keep = keepSwitch.checked;
     storeKeep(keep);
   } });
-  const rows = options(setting).map((value) => {
+  const claudeRow = (value) => {
     const reason = setting === "effort" ? refused[value] : null;
-    return el("button", { className: `option${value === current ? " chosen" : ""}`, disabled: Boolean(reason),
+    const chosen = value === current && !(setting === "model" && target);
+    return el("button", { className: `option${chosen ? " chosen" : ""}`, disabled: Boolean(reason),
       onclick: () => {
         if (setting === "effort" && value === "max") keep = false;
         closeSheet();
+        if (setting === "model" && target) setTarget(null);  // back to the assistant
         choose(setting, value, keep);
       } },
     el("span", { className: "option-name" }, value), el("span", { className: "sub" }, reason || hints[value] || ""),
-    el("span", { className: "tick" }, value === current ? "✓" : ""));
-  });
+    el("span", { className: "tick" }, chosen ? "✓" : ""));
+  };
+  const otherRow = (model) => el("button", { className: `option${model.target === target ? " chosen" : ""}`,
+    onclick: () => {
+      closeSheet();
+      setTarget(model.target);
+    } },
+  el("span", { className: "option-name" }, model.label, model.badge ? el("span", { className: "badge" }, model.badge) : null),
+  el("span", { className: "sub" }, model.hint || ""), el("span", { className: "tick" }, model.target === target ? "✓" : ""));
+  const rows = setting === "effort" ? options(setting).map(claudeRow)
+    : modelGroups(options("model"), conversation.settings?.models).flatMap((group, n) => [
+      n || conversation.settings?.models?.length ? el("h4", { className: "sheet-group" }, group.title) : null,
+      ...group.models.map((model) => (n ? otherRow(model) : claudeRow(model.id)))]);
   const keepRow = el("label", { className: "option keep" }, el("span", { className: "option-name" }, STRINGS.keep, keepNote), keepSwitch);
   if (setting === "effort" && current === "max") {
     keepSwitch.disabled = true;
@@ -386,6 +507,7 @@ function draw() {
   const follow = list.scrollHeight - list.scrollTop - list.clientHeight < NEAR_BOTTOM;
   $("chat-bot").textContent = conversation.settings?.bot || snapshot?.bot || "Chat";
   $("chat-timings").hidden = !snapshot?.machine;
+  drawTabs();
   drawBanner();
   drawItems();
   drawStatus();
@@ -422,6 +544,7 @@ function drawEmpty() {
 
 function itemNode(item) {
   if (item.kind === "user_message") return userNode(item);
+  if (item.kind === "model_message") return modelNode(item);
   if (item.kind === "assistant_message") return item.to ? sentToNode(item) : assistantNode(item);
   if (item.kind === "notice") return el("div", { className: "notice-line" }, item.text);
   if (item.kind === "step") return stepNode(item);
@@ -429,7 +552,7 @@ function itemNode(item) {
 }
 
 function userNode(item) {
-  const label = sourceLabel(item);
+  const label = item.target ? STRINGS.toTarget(targetLabel(item.target)) : sourceLabel(item);
   const state = item.source === "miniapp" && item.state && item.state !== "delivered"
     ? el("span", { className: `delivery ${item.state}` }, STRINGS.states[item.state] || item.state) : null;
   const retryButton = item.state === "failed" && item.local !== false && item.client_id
@@ -449,6 +572,20 @@ function assistantNode(item) {
     item.buttons?.length ? el("div", { className: "asks" }, ...item.buttons.map((label) => el("span", { className: "ask" }, label)),
       el("span", { className: "sub" }, STRINGS.answerInTelegram)) : null,
     item.checklist?.length ? el("ul", { className: "checklist" }, ...item.checklist.map((label) => el("li", {}, `☐ ${label}`))) : null);
+}
+
+/* An answer of another add-in's model: like the assistant's, under the model's name and badge. */
+function modelNode(item) {
+  const model = targetModel(item.target) || {};
+  const body = el("div", { className: "markdown" });
+  body.innerHTML = rendered(item) + (item.done ? "" : '<span class="cursor">▍</span>');
+  const meta = item.meta || {};
+  const facts = [meta.answered, meta.tokens ? `${meta.tokens} tokens` : "", meta.seconds ? `${Math.round(meta.seconds)} s` : "",
+    meta.stopped ? STRINGS.stopped : "", meta.error || ""].filter(Boolean).join(" · ");
+  return el("div", { className: "msg assistant model", title: moment(item.ts) },
+    el("div", { className: "model-head" }, item.model_label || model.label || item.model || "",
+      (item.badge || model.badge) ? el("span", { className: "badge" }, item.badge || model.badge) : null),
+    body, facts && item.done ? el("div", { className: "msg-foot" }, facts) : null);
 }
 
 function sentToNode(item) {
@@ -489,7 +626,8 @@ function openBotChat() {
 }
 
 function drawStatus() {
-  const text = stopping ? `${STRINGS.stop}…` : statusText(conversation.status);
+  const text = stopping ? `${STRINGS.stop}…`
+    : target ? targetStatusText(conversation.targets[target]) : statusText(conversation.status);
   $("chat-status").textContent = text;
   $("chat-status").hidden = !text;
   $("chat-state").textContent = conversation.status?.state === "asleep" ? "asleep" : "";
@@ -503,12 +641,61 @@ function drawChips() {
     chip.classList.toggle("pending", setting in asked);
     chip.title = setting in asked ? STRINGS.pending : "";
   }
+  if (target) $("chip-model").textContent = targetLabel(target);
+  $("chip-effort").hidden = Boolean(target);  // another add-in's model has no effort to set
+  $("chip-actions").hidden = !(conversation.settings?.actions || []).length;
+}
+
+/* --- actions: forms another add-in brings, which fill the composer and send nothing --- */
+
+function actionsSheet() {
+  const actions = conversation.settings?.actions || [];
+  openSheet(STRINGS.actions, actions.map((action) => el("button", { className: "option", onclick: () => actionForm(action) },
+    el("span", { className: "option-name" }, `${action.icon ? `${action.icon} ` : ""}${action.label || action.id}`))));
+}
+
+function actionForm(action) {
+  const inputs = {};
+  const fields = (action.form || []).map((field) => {
+    let input;
+    if (field.type === "select") {
+      input = el("select", {}, ...(field.options || []).map((option) => {
+        const [value, label] = typeof option === "object" ? [option.value, option.label] : [option, option];
+        return el("option", { value, selected: value === field.default }, label ?? value);
+      }));
+    } else if (field.type === "textarea") {
+      input = el("textarea", { rows: 4, value: field.default || "" });
+    } else if (field.type === "switch") {
+      input = el("input", { type: "checkbox", checked: Boolean(field.default) });
+    } else {
+      input = el("input", { type: "text", value: field.default || "" });
+    }
+    inputs[field.name] = input;
+    return el("label", { className: `form-field ${field.type || "text"}` }, el("span", { className: "sub" }, field.label || field.name), input);
+  });
+  const fill = () => {
+    const values = Object.fromEntries(Object.entries(inputs).map(([name, input]) => [name,
+      input.type === "checkbox" ? input.checked : input.value]));
+    closeSheet();
+    fillComposer(fillTemplate(action, values));
+  };
+  openSheet(`${action.icon ? `${action.icon} ` : ""}${action.label || action.id}`, [...fields,
+    action.note ? el("p", { className: "sheet-text sub" }, action.note) : null,
+    el("button", { className: "sheet-button", onclick: fill }, STRINGS.fill)]);
+}
+
+/* Put text in the composer for the person to read and send. */
+function fillComposer(text) {
+  $("chat-text").value = text;
+  composerChanged();
+  $("chat-text").focus();
 }
 
 function drawSendButton() {
   const button = $("chat-send");
   const check = composerCheck($("chat-text").value);
-  const stop = busy(conversation.status) && !$("chat-text").value.trim();
+  const running = target ? targetBusy(conversation, target) : busy(conversation.status);
+  const stop = running && !$("chat-text").value.trim();
   button.classList.toggle("stop", stop);
   button.classList.toggle("spinning", Boolean(stopping));
   button.setAttribute("aria-label", stop ? STRINGS.stop : STRINGS.send);
