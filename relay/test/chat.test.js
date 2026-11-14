@@ -233,7 +233,18 @@ test("an event too big is cut with a note, or left out", () => {
   const big = fitted(event(1, "assistant_message", { markdown: "x".repeat(40_000) }));
   assert.ok(new TextEncoder().encode(big).length <= EVENT_MAX);
   assert.ok(JSON.parse(big).markdown.endsWith("… (full text in Telegram)"));
-  assert.equal(fitted({ seq: 1, kind: "step", input_preview: "y".repeat(40_000) }), null);
+});
+
+test("an event too big with no text to cut is left out, said in the log, and the rest of its batch kept", async (t) => {
+  const { queue, env } = await chatRelay(t);
+  const warned = t.mock.method(console, "warn", () => {});
+  const huge = { seq: 2, kind: "step", key: "s:1", input_preview: "y".repeat(40_000) };
+  assert.equal((await relay.fetch(fromVm(String(ALICE), { events: [event(1), huge, event(3)] }), env)).status, 204);
+
+  assert.deepEqual(queue.sql.exec("SELECT seq FROM chat_events ORDER BY seq").toArray().map((r) => r.seq), [1, 3]);
+  assert.deepEqual(warned.mock.calls.map((call) => call.arguments[0]),
+    [`chat: a step event (seq 2) over ${EVENT_MAX} bytes was left out`]);
+  assert.doesNotMatch(warned.mock.calls[0].arguments[0], /yyy/);
 });
 
 test("only the VM puts events and the members list", async (t) => {

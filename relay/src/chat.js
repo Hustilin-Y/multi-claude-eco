@@ -275,8 +275,14 @@ export class ChatStore {
 }
 
 /* An event's JSON, cut to EVENT_MAX: a long message's text is shortened with a note; anything else
- * that big is left out (null). */
+ * that big is left out (null), with a warning in the Worker's log naming it, not what it holds. */
 export function fitted(event) {
+  const body = cut(event);
+  if (body === null) console.warn(`chat: a ${event.kind} event (seq ${event.seq}) over ${EVENT_MAX} bytes was left out`);
+  return body;
+}
+
+function cut(event) {
   let body = JSON.stringify(event);
   if (bytes(body) <= EVENT_MAX) return body;
   const field = ["markdown", "text"].find((name) => typeof event[name] === "string");

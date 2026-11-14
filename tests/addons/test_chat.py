@@ -527,6 +527,33 @@ def test_older_history_reads_a_huge_transcript_a_window_at_a_time(r, desk, chat,
     assert peak < 20 * 1024 * 1024
 
 
+def test_a_huge_line_running_past_a_window_isnt_read_to_its_end(chat, tmp_path, monkeypatch):
+    """[AC-N1a] A last line of 20 MB with no newline early on: the window's read stops soon past its end."""
+    files, read = chat.files, []
+    path = tmp_path / "t.jsonl"
+    with open(path, "wb") as f:
+        f.write(json.dumps(said("before", 1)).encode() + b"\n")
+        f.write(b"x" * (20 * 1024 * 1024) + b"\n")
+
+    def counting(p, mode):
+        f = open(p, mode)
+        real = f.read
+
+        def read_counted(size=-1):
+            data = real(size)
+            read.append(len(data))
+            return data
+        f.read = read_counted
+        return f
+
+    monkeypatch.setattr(files, "opener", counting)
+    window = 64 * 1024
+    found = list(files.lines(path, 0, window))
+
+    assert [line is None for _, _, line in found] == [False]
+    assert sum(read) <= window + files.LINE_MAX + files.CHUNK
+
+
 def test_history_goes_back_to_where_the_shown_events_start(r, desk, chat):
     alice = desk.users["alice"]
     path = session_transcript(r, alice)

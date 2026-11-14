@@ -37,7 +37,7 @@ def size_of(path):
 def lines(path, start, end=None):
     """(offset, next offset, line) for each whole line that starts in [start, end) of path (to its
     end when end is None), start moved to the next line's start unless a line starts there. A line
-    longer than LINE_MAX comes as None, unread."""
+    longer than LINE_MAX comes as None, unread; one that also runs past end isn't read to its end."""
     try:
         f = opener(path, "rb")
     except OSError:
@@ -63,6 +63,8 @@ def lines(path, start, end=None):
                 elif parts:
                     parts = []  # too long: let it go
                 if newline < 0:
+                    if end is not None and length > LINE_MAX and at + length >= end:
+                        return  # a line too long to show, running past the window: its end isn't read
                     break
                 yield at, at + length + 1, b"".join(parts) if length <= LINE_MAX else None
                 at += length + 1
