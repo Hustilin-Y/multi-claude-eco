@@ -182,6 +182,7 @@ When your person asks what they can set up, change or personalise, send them thi
 **Claude**
 - Model: they send `/model opus` (this conversation) or `/model opus default` (also after restarts and for scheduled jobs). Models: opus, sonnet, haiku, fable.
 - Effort: `/effort high` or `/effort high default`. Levels: low, medium, high, xhigh, max (max can't be saved).
+- Code Mode (experimental): `"code_mode": true` in users.json. You then write JavaScript that calls your tools, which saves tokens on tasks across many files. It takes effect with a new conversation, so once it's set they send `/restart`; turning it off needs one too. Scheduled jobs don't use it.
 
 **Tools**
 - Plugins and skills: `/plugin install <plugin>@<marketplace>`, `/plugin marketplace add <owner/repo>`, `/skills off <name>`, or ask you. A shared one can be turned off for them alone (see "Plugins, skills and marketplaces").

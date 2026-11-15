@@ -213,6 +213,8 @@ assistant pair <code> <name> "Display Name"     # approves them and closes pairi
 
 A person's entry in `users.json` can also hold `"timezone"` (an IANA name such as `"Europe/Berlin"`), which sets the times the bot shows them. Their assistant sets it when it learns it, and they can change it in the control panel.
 
+`"code_mode": true` turns on Claude Code's experimental [Code Mode](https://code.claude.com/docs/en/code-mode) for that person's assistant: Claude writes JavaScript that calls its tools, which saves tokens on tasks across many files. It takes effect at their next `/restart`, with a new conversation, and turning it off needs one too. The first time on a machine, Claude Code asks once in the terminal whether to turn it on: answer it with `assistant attach <name>`. Scheduled jobs don't use it.
+
 ## Bot commands
 
 | Command | What it does |

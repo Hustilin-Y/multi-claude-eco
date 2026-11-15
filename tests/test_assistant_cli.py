@@ -10,7 +10,7 @@ import time
 
 import pytest
 
-from conftest import ALICE_CHAT, BIN, BOB_CHAT, FakeClaude, FakeProc
+from conftest import ALICE_CHAT, BIN, BOB_CHAT, FakeClaude, FakeProc, session_env
 
 
 class Home:
@@ -784,3 +784,15 @@ def test_backup_restic_runs_any_restic_command_on_the_repository(backup):
 
     password = str(backup.root / "state" / "backup-password")
     assert restic_calls(backup) == [("rclone:cloud:Backups", password, f"{RCLONE} snapshots --latest 1")]
+
+
+# --- run-user.sh ---
+
+def test_code_mode_is_on_only_for_a_person_whose_entry_asks_for_it(tmp_path):
+    on = session_env(tmp_path / "on", code_mode=True)
+    off = session_env(tmp_path / "off", code_mode=False)
+    unset = session_env(tmp_path / "unset")
+
+    assert on["CLAUDE_CODE_EXPERIMENTAL_CODE_MODE"] == "1"
+    assert "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE" not in off
+    assert "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE" not in unset and unset["TG_CHAT_ID"] == ALICE_CHAT

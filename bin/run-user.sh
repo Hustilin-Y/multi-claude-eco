@@ -21,6 +21,10 @@ if addon_on locations; then
   # Tools and plugins find the latest location the person shared on Telegram here.
   export ASSISTANT_LOCATION="$ROOT/state/locations/$TG_CHAT_ID.json"
 fi
+if [ "$(user_field "$name" code_mode)" = true ]; then
+  # Claude Code ignores this variable in a folder's own settings, so it's set per person here.
+  export CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1
+fi
 
 resume=1
 [ "${2:-}" = fresh ] && resume=0  # /restart: begin with a new conversation
