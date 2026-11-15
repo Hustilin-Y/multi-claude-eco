@@ -705,9 +705,10 @@ class Ext:
         self.messages, self.stops = [], []
         self.takes = True
         self.assists, self.assist_answer = [], {"text": "Goal: an English brief."}
+        self.tab_actions, self.more_tabs = [], []
 
     def chat_tabs(self, user):
-        return [{"id": "runs", "title": "Runs"}]
+        return [{"id": "runs", "title": "Runs"}, *self.more_tabs]
 
     def chat_models(self, user):
         return [{"id": "m1", "label": "Model One", "hint": "free", "group": "Elsewhere", "badge": "free"}]
@@ -722,6 +723,10 @@ class Ext:
 
     def chat_stop(self, user, target):
         self.stops.append((user.name, target))
+
+    def chat_tab_action(self, user, action, values):
+        self.tab_actions.append((user.name, action, values))
+        return {"text": "started"}
 
     def chat_assist(self, user, action, field, values):
         self.assists.append((user.name, action, field, values))
@@ -885,5 +890,21 @@ def test_without_an_add_in_that_assists_there_is_no_button_and_a_request_goes_no
     chat.on_tick(desk, time.time())
 
     assert shown(chat, "settings")[0]["assist"] == []
-    assert [r["error"] for r in shown(chat, "assist_result")] == ["that form's add-in can't help with it now"]
+    assert [r["error"] for r in shown(chat, "assist_result")] == ["that add-in can't do it now"]
+    assert desk.users["alice"].queue == []
+
+
+def test_a_tab_names_its_own_module_and_its_requests_reach_its_add_in(r, desk, chat, ext):
+    """A tab module's api.request: a chat message of kind tab_action, to chat_tab_action alone."""
+    ext.more_tabs = [{"id": "lists", "title": "Lists", "module": "lists.js"}, {"id": "odd", "title": "Odd", "module": "../x.js"}]
+    session_transcript(r, desk.users["alice"])
+    open_page(desk, chat)
+    assert [t["module"] for t in shown(chat, "settings")[0]["tabs"]] == [
+        "addons/ext/tab.js", "addons/ext/lists.js", "addons/ext/tab.js"]
+
+    desk.relay_inbound(message("review", kind="tab_action", action="ext:review", values={"repo": "a/b", "branch": "main"}))
+    chat.on_tick(desk, time.time())
+
+    assert ext.tab_actions == [("alice", "review", {"repo": "a/b", "branch": "main"})]
+    assert [(r["client_id"], r["text"]) for r in shown(chat, "assist_result")] == [(CID, "started")]
     assert desk.users["alice"].queue == []

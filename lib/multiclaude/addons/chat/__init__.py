@@ -11,9 +11,12 @@ taken in the last day, so a retry isn't run twice), state/chat/<name>.seq (files
 
 Other add-ins may extend the chat, as add-ins offer hooks to each other (addons/__init__.py). The chat
 asks the add-ins that are on, by these names, and knows each add-in only by the name it's on under:
-- chat_tabs(user) -> [{"id", "title"}]: tabs after Chat and Panel; the page loads the add-in's
-  addons/<name>/tab.js (from its relay-public/ folder, which `assistant relay deploy` uploads), an ES
-  module exporting mount(root, api). Public: no secrets or addresses in it.
+- chat_tabs(user) -> [{"id", "title", "module"}]: tabs after Chat and Panel; the page loads the add-in's
+  addons/<name>/<module> (tab.js unless named; from its relay-public/ folder, which `assistant relay
+  deploy` uploads), an ES module exporting mount(root, api). Public: no secrets or addresses in it.
+- chat_tab_action(user, action, values) -> {"text"} or {"error"}: a request a tab module sends its add-in
+  (api.request), with every check a message gets; run in the background, one at a time per person, its
+  answer back as an "assist_result" event, as chat_assist's.
 - chat_models(user) -> [{"id", "label", "hint", "group", "badge"}]: more models in the model sheet. Picking
   one makes "<name>:<id>" the composer's target.
 - chat_actions(user) -> [{"id", "label", "icon", "template", "form": [{"name", "label", "type": "select",
@@ -55,6 +58,8 @@ TARGET_RE = re.compile(r"[a-z0-9][a-z0-9-]*:[\w.:-]{1,80}")  # "<add-in>:<its ow
 ADDON_STATE_MAX = 64 * 1024                # bytes of an add-in's state for its tab
 NOT_AVAILABLE = "That model isn't available now."
 FIELD_RE = re.compile(r"\w{1,40}")
+MODULE_RE = re.compile(r"[\w-]{1,40}\.js")
+REQUEST_HOOKS = {"assist": "chat_assist", "tab_action": "chat_tab_action"}  # message kinds that go to an add-in
 _assisting = set()                         # people with a field being improved
 MEMBERS_EVERY = 10 * 60                    # the members list is put again this often, in case the relay lost it
 MEMBERS_RETRY = 30
@@ -225,13 +230,13 @@ def take_message(desk, payload, now=None):
         log(f"{user.name}: a chat message to {target!r}, which is no target; dropped")
         return
     kind = payload.get("kind")
-    if kind is not None and (kind != "assist" or not assist_request(payload)):
+    if kind is not None and (kind not in REQUEST_HOOKS or not assist_request(payload)):
         log(f"{user.name}: a chat {kind!r} that isn't one; dropped")
         return
     if not files.take_message(user.name, client_id, now):
         log(f"{user.name}: chat message {client_id} came again; it was taken already")
         return
-    if kind == "assist":
+    if kind in REQUEST_HOOKS:
         to_assist(user, payload, client_id, now)
         return
     if target:
@@ -272,10 +277,11 @@ def to_target(user, target, text, client_id, now):
 
 
 def assist_request(payload):
-    """Whether an "assist" envelope names an action, a field and the form's values as the relay checks them."""
+    """Whether an "assist" (or "tab_action") envelope names an action, a field (an assist's) and the values as
+    the relay checks them."""
     values = payload.get("values")
-    return (isinstance(payload.get("action"), str) and TARGET_RE.fullmatch(payload["action"])
-            and isinstance(payload.get("field"), str) and FIELD_RE.fullmatch(payload["field"])
+    field_ok = payload.get("kind") != "assist" or isinstance(payload.get("field"), str) and FIELD_RE.fullmatch(payload["field"])
+    return (isinstance(payload.get("action"), str) and TARGET_RE.fullmatch(payload["action"]) and field_ok
             and isinstance(values, dict) and len(values) <= 20
             and all(FIELD_RE.fullmatch(str(k)) and isinstance(v, (str, bool)) for k, v in values.items()))
 
@@ -293,7 +299,7 @@ def to_assist(user, payload, client_id, now):
         event = ({"text": text} if isinstance(text, str) and text.strip()
                  else {"error": str(result.get("error") or "nothing came back")})
         feed.add({"kind": "assist_result", "client_id": client_id, "action": payload["action"],
-                  "field": payload["field"], **event})
+                  "field": payload.get("field"), **event})
 
     if user.name in _assisting:
         answer({"error": "one at a time: the last one is still being improved"})
@@ -302,9 +308,13 @@ def to_assist(user, payload, client_id, now):
 
     def run():
         try:
-            log(f"{user.name}: improving {payload['field']} of {payload['action']}")
-            answer(offer(name, "chat_assist", user, action, payload["field"], payload["values"])
-                   or {"error": "that form's add-in can't help with it now"})
+            if payload["kind"] == "assist":
+                log(f"{user.name}: improving {payload['field']} of {payload['action']}")
+                given = offer(name, "chat_assist", user, action, payload["field"], payload["values"])
+            else:
+                log(f"{user.name}: {payload['action']} from its tab")
+                given = offer(name, "chat_tab_action", user, action, payload["values"])
+            answer(given or {"error": "that add-in can't do it now"})
         finally:
             _assisting.discard(user.name)
     later(run)
@@ -342,12 +352,18 @@ def extras(user):
         return [(name, item) for name, items in offered(hook, user) for item in items or []
                 if isinstance(item, dict) and item.get("id")]
     return {"tabs": [{"id": f"{name}:{t['id']}", "title": str(t.get("title") or t["id"]), "addon": name,
-                      "module": f"addons/{name}/tab.js"} for name, t in listed("chat_tabs")],
+                      "module": f"addons/{name}/{module_of(t)}"} for name, t in listed("chat_tabs")],
             "models": [{"target": f"{name}:{m['id']}", "label": str(m.get("label") or m["id"]),
                         "hint": m.get("hint") or "", "group": m.get("group") or name, "badge": m.get("badge") or ""}
                        for name, m in listed("chat_models")],
             "actions": [{**a, "id": f"{name}:{a['id']}", "addon": name} for name, a in listed("chat_actions")],
             "assist": assisters()}
+
+
+def module_of(tab):
+    """The tab's module file in its add-in's relay-public/ folder: what it names, if it's a plain file name, else tab.js."""
+    named = str(tab.get("module") or "")
+    return named if MODULE_RE.fullmatch(named) else "tab.js"
 
 
 def assisters():

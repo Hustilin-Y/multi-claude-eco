@@ -122,6 +122,16 @@ async function mountTab(entry) {
       showTab("chat");
       fillComposer(text);
     },
+    /* Send the add-in a request (chat_tab_action): {text} or {error}. Every check a message gets. */
+    async request(id, values = {}) {
+      const clientId = crypto.randomUUID();
+      try {
+        await relay("chat/send", { client_id: clientId, text: String(id), kind: "tab_action", action: `${addon}:${id}`, values });
+      } catch (error) {
+        return { error: error instanceof Refused && error.error === "reopen" ? STRINGS.reopen : error.message };
+      }
+      return assisted(clientId);
+    },
     toast,
     el,
     markdown: renderMarkdown,
@@ -583,10 +593,13 @@ function modelNode(item) {
   const meta = item.meta || {};
   const facts = [meta.answered, meta.tokens ? `${meta.tokens} tokens` : "", meta.seconds ? `${Math.round(meta.seconds)} s` : "",
     meta.stopped ? STRINGS.stopped : "", meta.error || ""].filter(Boolean).join(" · ");
+  const buttons = (item.actions || []).filter((a) => a?.label && a.fill).map((a) => el("button", { className: "copy-button",
+    onclick: () => fillComposer(a.fill) }, a.label));  // they only fill the composer, for the person to send
   return el("div", { className: "msg assistant model", title: moment(item.ts) },
     el("div", { className: "model-head" }, item.model_label || model.label || item.model || "",
       (item.badge || model.badge) ? el("span", { className: "badge" }, item.badge || model.badge) : null),
-    body, facts && item.done ? el("div", { className: "msg-foot" }, facts) : null);
+    body, facts && item.done ? el("div", { className: "msg-foot" }, facts) : null,
+    buttons.length ? el("div", { className: "copies" }, ...buttons) : null);
 }
 
 function sentToNode(item) {

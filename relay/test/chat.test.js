@@ -320,3 +320,10 @@ test("a form's request to improve a field carries its action, field and values; 
   }
   assert.equal(sentChats(vm).length, 1);
 });
+
+test("a tab's request carries its action and values, and needs no field", async (t) => {
+  const { vm, env } = await chatRelay(t);
+  assert.equal((await send(env, "review", { extra: { kind: "tab_action", action: "ext:review", values: { repo: "a/b" } } })).status, 202);
+  const { payload } = sentChats(vm)[0];
+  assert.deepEqual([payload.kind, payload.action, payload.field, payload.values], ["tab_action", "ext:review", undefined, { repo: "a/b" }]);
+});

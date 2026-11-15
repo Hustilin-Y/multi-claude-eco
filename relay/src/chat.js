@@ -85,18 +85,20 @@ export function chatMessage(body) {
   if (target != null && !(typeof target === "string" && TARGET_RE.test(target))) return null;
   const message = { client_id: clientId.toLowerCase(), text, ...(target ? { target } : {}) };
   if (posted?.kind == null) return message;
-  return posted.kind === "assist" ? assistRequest(message, posted) : null;
+  return ["assist", "tab_action"].includes(posted.kind) ? assistRequest(message, posted) : null;
 }
 
-/* A form's request to have one of its fields improved by the add-in that brings the form: its action
- * ("<add-in>:<id>"), the field, and the form's values (strings and switches, as the page has them). */
-function assistRequest(message, { action, field, values }) {
-  if (typeof action !== "string" || !TARGET_RE.test(action) || typeof field !== "string" || !FIELD_RE.test(field)) return null;
+/* A request to the add-in that brings a form or a tab: an assist (one of the form's fields improved:
+ * its action "<add-in>:<id>", the field, the form's values) or a tab's action (its id and values).
+ * Values are strings and switches, as the page has them. */
+function assistRequest(message, { kind, action, field, values }) {
+  if (typeof action !== "string" || !TARGET_RE.test(action)) return null;
+  if (kind === "assist" && !(typeof field === "string" && FIELD_RE.test(field))) return null;
   if (!values || typeof values !== "object" || Array.isArray(values)) return null;
   const entries = Object.entries(values);
   if (entries.length > 20 || !entries.every(([name, value]) => FIELD_RE.test(name)
     && (typeof value === "boolean" || typeof value === "string" && value.length <= TEXT_MAX))) return null;
-  return { ...message, kind: "assist", action, field, values };
+  return { ...message, kind, action, ...(kind === "assist" ? { field } : {}), values };
 }
 
 /* The envelope that takes a message to the VM: one per person and message (a retry is the same one),
