@@ -497,6 +497,28 @@ def test_install_schedules_the_health_samples_once(kept_crontab):
     assert len(lines) == 4  # and the shared sync's comment and line, once
 
 
+def test_cron_adds_and_removes_a_persons_job_and_leaves_the_rest(kept_crontab):
+    theirs = "# assistant: the machine's health, every 5 minutes\n*/5 * * * * health\n"
+    (kept_crontab.fake.home / "crontab").write_text(theirs)
+    line = "0 8 20 11 * notify; assistant cron remove --user alice alice-fri"
+
+    added = kept_crontab.run("cron", "add", "--user", "alice", "reminder Fri 10:00, one-off (alice-fri)", line)
+    assert added.returncode == 0, added.stderr
+    assert crontab(kept_crontab) == theirs + f"# alice: reminder Fri 10:00, one-off (alice-fri)\n{line}\n"
+
+    removed = kept_crontab.run("cron", "remove", "--user", "alice", "alice-fri")
+    assert removed.returncode == 0, removed.stderr
+    assert crontab(kept_crontab) == theirs
+    assert len(list((kept_crontab.root / "state" / "crontab").glob("*.txt"))) == 2
+
+
+def test_cron_is_only_for_people_on_the_bot(kept_crontab):
+    r = kept_crontab.run("cron", "add", "--user", "mallory", "x", "0 8 * * * x")
+
+    assert r.returncode == 1 and "isn't anyone" in r.stderr
+    assert crontab(kept_crontab) == ""
+
+
 def test_install_installs_uv_when_it_is_missing(home):
     (home.fake.bin / "uv").unlink()
     (home.fake.bin / "curl").write_text('#!/bin/sh\necho "$*" > "$FAKE_CLAUDE_DIR/curl"\n'

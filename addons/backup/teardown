@@ -5,6 +5,6 @@ set -euo pipefail
 # shellcheck source-path=SCRIPTDIR source=restic.sh
 . "$(dirname "$(readlink -f "$0")")/restic.sh"
 
-{ crontab -l 2>/dev/null || true; } |
-  awk -v command="$BACKUP_COMMAND" -v comment="$BACKUP_CRON_COMMENT" '!index($0, command) && $0 != comment' |
-  crontab -
+if crontab -l 2>/dev/null | grep -qF "$BACKUP_COMMAND"; then
+  "$ROOT/bin/assistant" cron remove --user assistant "$BACKUP_COMMAND"
+fi
