@@ -66,7 +66,7 @@ class Deliver(Work):
                          "run `assistant status` on the VM.")
             return False
         user.queue.pop(0)
-        user.turn.expect(now)
+        user.turn.delivered(now)
         return True
 
 
@@ -241,7 +241,7 @@ def serve(user, now):
     """Work through the person's queue in order, as far as their assistant allows."""
     while user.queue:
         work = user.queue[0]
-        if work.waits_for_idle and user.turn.busy:
+        if work.waits_for_idle and user.turn.working:
             work.hold(user, now)
             return
         if work.needs_assistant and not user.ready():

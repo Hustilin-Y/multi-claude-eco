@@ -692,6 +692,34 @@ def test_serve_holds_a_switch_until_the_turn_ends(r, desk, monkeypatch):
     assert len(alice.queue) == 1 and alice.queue[0].since == 50.0
 
 
+def test_work_waiting_for_idle_goes_ahead_of_a_message_queued_behind_it(r, desk, monkeypatch):
+    # The queued note marked the assistant busy, so a reconnect waited for it and it for the reconnect (18 Nov 2026).
+    alice = desk.users["alice"]
+    typed = []
+    monkeypatch.setattr(alice, "ready", lambda: True)
+    monkeypatch.setattr(alice, "run_command", lambda command: typed.append(command) or "Reconnected to srv")
+    monkeypatch.setattr(alice, "type_message", lambda header, body: typed.append(header))
+    alice.enqueue(r.work.SessionCommands(time.time(), commands=["/mcp reconnect srv"]))
+    alice.queue_message(deliver(r, "[Telegram from Alice]", "7"), time.time())
+
+    r.work.serve(alice, time.time())
+
+    assert typed[:2] == ["/mcp reconnect srv", "[Telegram from Alice]"]
+    assert alice.queue == [] and alice.turn.working
+
+
+def test_a_message_queued_during_a_turn_still_holds_work_waiting_for_idle(r, desk, monkeypatch):
+    alice = desk.users["alice"]
+    monkeypatch.setattr(alice, "ready", lambda: True)
+    alice.turn.delivered(time.time())
+    alice.enqueue(r.work.Switch(1.0, "model", "opus"))
+    alice.queue_message(deliver(r, "h", "8"), time.time())
+
+    r.work.serve(alice, time.time())
+
+    assert kinds(alice) == ["Switch", "Deliver"]
+
+
 def test_serve_clears_once_idle_and_keeps_messages_sent_after(r, desk, monkeypatch):
     alice = desk.users["alice"]
     wiped = []
@@ -1835,7 +1863,7 @@ ESCAPE = (("send-keys", "-t", "=u-alice:", "Escape"), None)
 
 def busy(desk, name="alice"):
     user = desk.users[name]
-    user.turn.expect(time.time())
+    user.turn.delivered(time.time())
     return user
 
 

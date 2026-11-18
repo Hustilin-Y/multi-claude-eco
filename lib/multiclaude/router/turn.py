@@ -43,6 +43,7 @@ class Turn:
     def __init__(self, name):
         self.name = name
         self.busy = False
+        self.only_queued = False  # busy only with messages still in the router's queue
         self.pending = 0         # queued messages no turn has picked up yet
         self.in_turn = False     # it started working on something and hasn't finished
         self.last_write = 0.0    # when its transcript last grew
@@ -53,7 +54,7 @@ class Turn:
         self.stalled = False     # judged stuck, and nothing written since: a dialog may still open
 
     def end(self):
-        self.busy = self.in_turn = False
+        self.busy = self.in_turn = self.only_queued = False
 
     def reset(self):
         """End the turn and forget the messages queued in it: claude restarted or its context was cleared."""
@@ -61,15 +62,27 @@ class Turn:
         self.pending = 0
 
     def expect(self, now):
-        """A message is on its way: show "typing…" right away, and start the stuck-turn clock
+        """A message is queued: show "typing…" right away, and start the stuck-turn clock
         now rather than at the last transcript write, which may be hours old."""
+        if not self.busy:
+            self.only_queued = True
         self.busy, self.last_write = True, now
+
+    def delivered(self, now):
+        """A message was typed in: Claude Code works on it until its turn ends."""
+        self.busy, self.only_queued, self.last_write = True, False, now
+
+    @property
+    def working(self):
+        """Busy with something Claude Code has. Messages still in the router's queue don't count, or
+        work ahead of them that waits for an idle assistant would wait for them, and they for it."""
+        return self.busy and not self.only_queued
 
     def handle(self, entry):
         self.stalled = False
         kind = entry.get("type")
         if kind == "queue-operation":
-            self.busy = True
+            self.busy, self.only_queued = True, False
             self.pending = self.pending + 1 if entry.get("operation") == "enqueue" else max(0, self.pending - 1)
         elif kind == "assistant":
             self.handle_reply(entry)
@@ -93,6 +106,7 @@ class Turn:
             self.failed = Failure(text, retryable(entry))
             return
         self.busy = self.in_turn = True
+        self.only_queued = False
         model = (entry.get("message") or {}).get("model") or ""
         if model.startswith("claude-"):  # not Claude Code's own "<synthetic>" notes
             self.model = model
