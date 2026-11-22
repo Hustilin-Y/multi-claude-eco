@@ -8,7 +8,7 @@ import re
 import threading
 from collections import defaultdict
 
-from multiclaude import crosschat, jsonfile, paths, questions, telegram
+from multiclaude import addons, crosschat, jsonfile, paths, questions, telegram
 from multiclaude.channels import TelegramChat
 from multiclaude.log import log
 from multiclaude.router import approvals, work
@@ -17,6 +17,9 @@ from multiclaude.router import inbound as messages
 BUTTON_RE = re.compile(r"ask:(\d+)")
 CLEAR_CANCELLED = "↩️ Cancelled: your context and our chat stay as they are."
 CLEAR_TOO_LATE = "⌛ Too late: the clear had already started."
+# The kinds of kept question the core answers itself. A tap on any other kind goes to the add-ins
+# (question_tapped) and never to an assistant, even when no add-in that's on takes it.
+CORE_KINDS = (questions.CHECKLIST, work.CANCEL_CLEAR, "approval")
 # One lock per checklist message, so its buttons are redrawn one at a time, each from the saved state.
 CHECKLIST_LOCKS = defaultdict(threading.Lock)
 
@@ -30,10 +33,21 @@ def answer(user, tap, now, to=None):
         log(f"{user.name}: button tap without a question message id; ignored")
         return
     path = paths.ASKS / str(user.chat_id) / f"{msg_id}.json"
-    ask = jsonfile.read_json(path, {})
+    ask = jsonfile.read_json(path, None)
     if not isinstance(ask, dict):
+        if path.exists():  # kept, but cut off or not a question: whose it is can't be told, so nobody's
+            log(f"{user.name}: tap on question {msg_id}, whose kept file can't be read; buttons taken off")
+            telegram.later(telegram.api, "editMessageReplyMarkup", chat_id=user.chat_id, message_id=msg_id)
+            return
         ask = {}
-    if ask.get("kind") == questions.CHECKLIST:
+    kind = ask.get("kind")
+    if kind and kind not in CORE_KINDS:
+        if not any(addons.call("question_tapped", user, tap, path, ask, now)):
+            log(f"{user.name}: tap on question {msg_id} of kind {kind!r}, which nothing that's on takes; "
+                "buttons taken off")
+            telegram.later(telegram.api, "editMessageReplyMarkup", chat_id=user.chat_id, message_id=msg_id)
+        return
+    if kind == questions.CHECKLIST:
         checklist_tapped(user, path, ask, msg_id, tap.attrs.get("callback_data", ""))
         return
     if ask.get("answer") is not None:

@@ -512,6 +512,40 @@ def test_a_second_tap_on_an_answered_question_is_ignored(r, desk):
     assert desk.users["alice"].queue == []
 
 
+def test_a_tap_on_a_question_of_a_kind_nobody_takes_never_reaches_the_assistant(r, desk):
+    path = r.paths.ASKS / ALICE_CHAT / "42.json"
+    write_json(path, {"question": "Print plate 1?", "options": ["Print", "Cancel"], "kind": "service"})
+
+    desk.inbound(channel("Print", msg_id="42", callback_id="cb1", callback_data="ask:0"))
+
+    assert desk.users["alice"].queue == []
+    assert ("editMessageReplyMarkup", {"chat_id": ALICE_CHAT, "message_id": "42"}) in r.api_calls
+    assert "answer" not in read_json(path)
+
+
+def test_a_tap_on_a_kept_question_that_cant_be_read_never_reaches_the_assistant(r, desk):
+    path = r.paths.ASKS / ALICE_CHAT / "42.json"
+    path.parent.mkdir(parents=True)
+    path.write_text('{"question": "Print plate 1?", "kind": "serv')  # cut off mid-write
+
+    desk.inbound(channel("Print", msg_id="42", callback_id="cb1", callback_data="ask:0"))
+
+    assert desk.users["alice"].queue == []
+    assert ("editMessageReplyMarkup", {"chat_id": ALICE_CHAT, "message_id": "42"}) in r.api_calls
+
+
+def test_an_add_in_that_takes_a_tap_gets_it_and_the_core_does_nothing_more(r, desk, monkeypatch):
+    write_json(r.paths.ASKS / ALICE_CHAT / "42.json", {"question": "Q", "options": ["A"], "kind": "service"})
+    taken = []
+    monkeypatch.setattr(r.asks.addons, "call",
+                        lambda hook, *a: taken.append((hook, a[1].text, a[3]["kind"])) or [True])
+
+    desk.inbound(channel("A", msg_id="42", callback_id="cb1", callback_data="ask:0"))
+
+    assert taken == [("question_tapped", "A", "service")]
+    assert r.api_calls == [] and desk.users["alice"].queue == []
+
+
 # --- answers to another person's assistant ----------------------------------------------------
 
 FOOTER = "*✉️ From Alice's Claude · your answer goes to it*"
