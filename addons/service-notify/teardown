@@ -1,0 +1,26 @@
+#!/usr/bin/env python3
+"""Run by `assistant addon disable service-notify`: takes the buttons off every service message
+whose buttons still work, so none is left whose tap nothing would take. The tokens and the
+state stay, for when it's turned on again. It ends well even when Telegram can't be reached
+(the core then takes the buttons off at the next tap, which never reaches an assistant)."""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "lib"))
+
+from multiclaude.addons.service_notify import messages, store, taps  # noqa: E402
+from multiclaude.log import log  # noqa: E402
+
+
+def main():
+    for chat, msg_id in store.live_all():
+        try:
+            messages.take_buttons_off(chat, msg_id, taps.EXPIRED)
+        except Exception as e:
+            log(f"service-notify teardown: message {msg_id}: {e!r}")
+            store.live_remove(chat, msg_id)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

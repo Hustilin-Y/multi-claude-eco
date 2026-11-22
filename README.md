@@ -36,6 +36,7 @@ Add-ins are in the repo but off until the owner turns them on. The core works fu
 | [model-fallback](addons/model-fallback/README.md) | A person hears when a safety classifier moves their assistant to another model, and it can switch back | Nothing |
 | [skill-notes](addons/skill-notes/README.md) | A quiet note in the chat whenever an assistant loads a skill | Nothing |
 | [backup](addons/backup/README.md) | Every night, everyone's settings, memory and files, and the bot's own, go into an encrypted backup off the machine | restic, and somewhere to keep the backups |
+| [service-notify](addons/service-notify/README.md) | Programs on the machine message the owner with pictures and buttons, and get the presses back, with no assistant in the loop | Nothing |
 
 ## Requirements
 
@@ -218,7 +219,7 @@ assistant addon disable <name>
 
 Enabling runs the add-in's own setup, if it has one (voice-notes installs Whisper, stickers its renderer, slack checks its tokens, backup starts its repository), and disabling its teardown (backup takes its cron line out). Enabling lists it in `config.json`, adds its rules to the assistants' rules, restarts the router and prints anything left to do. Each assistant reads its new rules from its next `/clear` or restart. Each add-in's README says what it needs and how to set it up:
 
-- [slack](addons/slack/README.md), [chat](addons/chat/README.md), [siri](addons/siri/README.md), [voice-notes](addons/voice-notes/README.md), [stickers](addons/stickers/README.md), [locations](addons/locations/README.md), [reminders](addons/reminders/README.md), [quiet-hours](addons/quiet-hours/README.md), [model-fallback](addons/model-fallback/README.md), [skill-notes](addons/skill-notes/README.md), [backup](addons/backup/README.md)
+- [slack](addons/slack/README.md), [chat](addons/chat/README.md), [siri](addons/siri/README.md), [voice-notes](addons/voice-notes/README.md), [stickers](addons/stickers/README.md), [locations](addons/locations/README.md), [reminders](addons/reminders/README.md), [quiet-hours](addons/quiet-hours/README.md), [model-fallback](addons/model-fallback/README.md), [skill-notes](addons/skill-notes/README.md), [backup](addons/backup/README.md), [service-notify](addons/service-notify/README.md)
 
 ## Adding people
 

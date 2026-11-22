@@ -1,0 +1,2 @@
+Next: make a token for each service with `assistant service key <name>` (it's printed once; put it in the service's own environment file, readable only by you), and point the service at http://127.0.0.1:8790 (or the "service_notify" "port" in config.json). A Python client to copy in is addons/service-notify/client/multiclaude_service.py.
+Button presses are trustworthy as the owner's own only with "frontdesk": "router" in config.json: with the front desk's plugin, each tap passes through the front desk session first.

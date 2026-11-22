@@ -39,6 +39,9 @@ which runs that function of every add-in that is on and defines it. The hooks:
   "buttons", "copy"} (bin/tg). It runs in tg's process; what fails there never fails the send.
 - on_tick(desk, now): every pass of the router's loop, twice a second; do anything slow in the
   background (router/desk.py).
+- question_tapped(user, tap, path, ask, now) -> bool: a tap on a button of a kept question (ask, read
+  from path in paths.ASKS) of a kind the core doesn't answer itself; True once the add-in took it.
+  A tap nobody takes only has its buttons taken off: it never reaches an assistant (router/asks.py).
 - menu_button(button) -> button: the {"text", "url"} of the button by every private chat's message
   box, which opens the control panel unless an add-in changes it (router/panel.py, through()).
 
@@ -55,7 +58,7 @@ from multiclaude import config, paths
 from multiclaude.log import log
 
 ALL = ("slack", "siri", "voice-notes", "stickers", "locations", "reminders", "quiet-hours", "model-fallback",
-       "skill-notes", "backup", "chat")
+       "skill-notes", "backup", "chat", "service-notify")
 
 
 class _Listing:
