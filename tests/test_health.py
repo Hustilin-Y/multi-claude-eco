@@ -116,6 +116,15 @@ def test_an_assistant_runs_while_claude_runs_in_its_tmux_session(health, monkeyp
     assert not health.machine.assistant_running(person("carol"), running)  # no session at all
 
 
+def test_an_isolated_assistant_runs_while_its_claude_runs_under_sudo_in_its_tmux_session(health, monkeypatch):
+    health.proc.process(6001, "sudo", 5, "sudo", "-n", "-u", "iso-user", "/srv/isolated/launcher", ppid=6000)
+    health.proc.process(6002, "sudo", 5, "sudo", "-n", "-u", "iso-user", "/srv/isolated/launcher", ppid=6001)
+    health.proc.process(6003, "claude", 300, "claude", ppid=6002)
+    monkeypatch.setattr(health.tmux, "run", lambda *args, stdin=None: subprocess.CompletedProcess(args, 0, b"6000\n", b""))
+
+    assert health.machine.assistant_running(SimpleNamespace(pane="u-work"), health.machine.processes())
+
+
 def test_the_router_runs_while_systemd_says_it_is_active(health, tmp_path, monkeypatch):
     fake = tmp_path / "bin" / "systemctl"
     fake.parent.mkdir()

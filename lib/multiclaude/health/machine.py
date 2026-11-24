@@ -342,9 +342,17 @@ def session(person, running):
 
 
 def assistant_running(person, running):
-    """Whether claude runs in the person's tmux session, where `assistant start-users` starts it."""
+    """Whether claude runs in the person's tmux session, where `assistant start-users` starts it: anywhere
+    under its shell, since an isolated person's claude runs under sudo (bin/run-user.sh)."""
     try:
         shell = int(tmux.Pane(person.pane).shell_pid())
     except (subprocess.SubprocessError, OSError, ValueError):
         return False
-    return any(process.ppid == shell and process.name == "claude" for process in running.values())
+    children = ProcessTree(running).children
+    waiting = list(children.get(shell, ()))
+    while waiting:
+        pid = waiting.pop()
+        if running[pid].name == "claude":
+            return True
+        waiting.extend(children.get(pid, ()))
+    return False

@@ -1,4 +1,5 @@
 """One Claude Code session in tmux: its transcript, its terminal, and its claude process."""
+import collections
 import os
 import signal
 import subprocess
@@ -120,20 +121,22 @@ class Session:
     # --- the claude process ---
 
     def claude_proc(self):
-        """(pid, seconds running) of the claude process in this session's pane, or None."""
+        """(pid, seconds running) of the claude process in this session's pane, or None. Looked for among
+        all of the pane shell's descendants, not only its children: an isolated person's claude runs under
+        sudo (bin/run-user.sh), which forks and stays its parent, with a monitor of its own in between under
+        use_pty. Such a claude is another Linux user's, so the router's signals to it (end_process) fail
+        with EPERM: /exit, and ending the pane, still end it."""
         try:
-            ps = subprocess.run(["ps", "-o", "pid=,comm=,etimes=", "--ppid", self.pane.shell_pid()],
+            shell = self.pane.shell_pid()
+            ps = subprocess.run(["ps", "-e", "-o", "pid=,ppid=,etimes=,comm="],
                                 capture_output=True, text=True, timeout=5).stdout
         except (subprocess.SubprocessError, OSError):
             return None
-        for line in ps.splitlines():
-            parts = line.split()
-            if len(parts) == 3 and parts[1] == "claude":
-                return int(parts[0]), int(parts[2])
-        return None
+        return claude_under(ps, shell)
 
     def running_version(self, proc):
-        """The Claude Code version the claude process proc runs, or None."""
+        """The Claude Code version the claude process proc runs, or None. None too for an isolated
+        person's claude, whose /proc/<pid>/exe the router may not read: it is never restarted for an update."""
         try:
             return version_of(os.readlink(f"/proc/{proc[0]}/exe"))
         except OSError:
@@ -514,6 +517,23 @@ def runs_commands(pid):
     except (subprocess.SubprocessError, OSError):
         return True  # can't tell, so don't risk killing it
     return has_tool_descendant(ps, pid)
+
+
+def claude_under(ps, pid):
+    """(pid, seconds running) of the claude process nearest to pid among its descendants, from
+    `ps -o pid=,ppid=,etimes=,comm=` output, or None."""
+    children = {}
+    for line in ps.splitlines():
+        parts = line.split(None, 3)
+        if len(parts) == 4:
+            children.setdefault(parts[1], []).append(parts)
+    todo = collections.deque([str(pid)])
+    while todo:
+        for child, _, etimes, comm in children.get(todo.popleft(), []):
+            if comm.strip() == "claude":
+                return int(child), int(etimes)
+            todo.append(child)
+    return None
 
 
 def has_tool_descendant(ps, pid):

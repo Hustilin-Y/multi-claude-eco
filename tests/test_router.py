@@ -1233,6 +1233,38 @@ def test_model_effort_and_mcp_login_are_set_up_by_hand_for_an_isolated_person(r,
     assert work.queue == []
 
 
+def test_claude_is_found_under_a_sudo_that_forks_rather_than_execs(r, tmp_path, monkeypatch):
+    """An isolated person's claude runs under sudo, which stays its parent: the pane's shell, then sudo, then claude."""
+    sudo, claude = tmp_path / "sudo", tmp_path / "claude"
+    sudo.write_text('#!/bin/sh\n"$@"\nexit $?\n')  # forks claude and waits, as sudo does
+    claude.write_text("#!/bin/sh\nsleep 30\nexit 0\n")
+    for program in (sudo, claude):
+        program.chmod(0o755)
+    shell = subprocess.Popen(["bash", "-c", f'"{sudo}" "{claude}"; exit 0'], start_new_session=True)
+    try:
+        session = r.session.Session("work", "u-work", "/nowhere", "5", "Work", workspace=tmp_path)
+        monkeypatch.setattr(session.pane, "shell_pid", lambda: str(shell.pid))
+        deadline = time.time() + 10
+        while (proc := session.claude_proc()) is None and time.time() < deadline:
+            time.sleep(0.1)
+
+        assert proc is not None
+        parent = Path(f"/proc/{proc[0]}/stat").read_text().rsplit(")", 1)[1].split()[1]
+        assert Path(f"/proc/{proc[0]}/comm").read_text().strip() == "claude"
+        assert Path(f"/proc/{parent}/comm").read_text().strip() == "sudo" and parent != str(shell.pid)
+    finally:
+        os.killpg(shell.pid, signal.SIGKILL)
+        shell.wait()
+
+
+def test_claude_under_takes_the_nearest_claude_below_the_shell(r):
+    ps = ("  10     1    50 bash\n  11    10    40 sudo\n  12    11    40 sudo\n  13    12    30 claude\n"
+          "  14    13     5 claude\n  20     1    99 claude\n")
+
+    assert r.session.claude_under(ps, "10") == (13, 30)
+    assert r.session.claude_under(ps, "99") is None
+
+
 def test_tasks_kept_for_an_isolated_person_are_looked_up_in_their_workspace(r, tmp_path):
     folder = tmp_path / "elsewhere"
     write_json(folder / ".claude" / "scheduled_tasks.json", {"tasks": [{"cron": "0 9 * * *"}]})
