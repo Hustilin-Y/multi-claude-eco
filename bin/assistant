@@ -454,7 +454,9 @@ cmd_job() {
   done
   prompt="$*"
   [ -n "$prompt" ] || die 'usage: assistant job [--user <name>] [--tools <tools>] [--deny <tools>] [--model <model>] "<instructions>"'
-  ws="$HOME/workspaces/$user"
+  # A job runs claude as this Linux user, with tg: never for a person whose session runs as another one.
+  [ -z "$(user_isolated "$user" linux_user)" ] || die "no jobs for $user: their session runs as another Linux user"
+  ws=$(user_workspace "$user")
   id=$(user_field "$user" telegram_id)
   [ -n "$id" ] && [ -d "$ws" ] || die "unknown user '$user' (see $USERS)"
   title=$(job_title "$prompt")

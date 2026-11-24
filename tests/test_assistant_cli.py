@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import ALICE_CHAT, BIN, BOB_CHAT, FakeClaude, FakeProc
+from conftest import ALICE_CHAT, BIN, BOB_CHAT, ISOLATED, FakeClaude, FakeProc
 
 
 class Home:
@@ -425,56 +425,50 @@ def test_notify_succeeds_when_tg_holds_the_message_for_later(home, monkeypatch):
 
 # --- an isolated person: their own Linux user, workspace and Claude config dir -----------------------------------
 
-ISOLATED = {"linux_user": "iso-user", "workspace": "/srv/isolated/workspace",
-            "claude_config_dir": "/srv/isolated/claude", "permission_mode": "default"}
-
-
 @pytest.fixture
 def isolated(home, tmp_path):
-    """alice's users.json gains "work", isolated; sudo (which runs what follows `-u USER`) and getent are fakes,
-    and claude is found where that user's home has it. run_user() runs one pass of run-user.sh work."""
+    """alice's users.json gains "work", isolated. sudo and getent are fakes: sudo records its argv and runs what
+    follows `-u USER` with an empty environment, getent knows iso-user only, and the launcher records its argv,
+    working folder and environment. run_user() runs one pass of run-user.sh work."""
     users = json.loads((home.root / "users.json").read_text())
     workspace = tmp_path / "srv" / "workspace"
     workspace.mkdir(parents=True)
-    entry = {**ISOLATED, "workspace": str(workspace), "claude_config_dir": str(tmp_path / "srv" / "claude")}
+    launcher = tmp_path / "srv" / "bin" / "launch-claude"
+    launcher.parent.mkdir(parents=True)
+    entry = {**ISOLATED, "workspace": str(workspace), "claude_config_dir": str(tmp_path / "srv" / "claude"),
+             "launcher": str(launcher)}
     (home.root / "users.json").write_text(json.dumps({**users, "work": {"telegram_id": "7", "display": "Work",
                                                                        "isolated": entry}}))
-    their_home = tmp_path / "iso-home"
-    (their_home / ".local").mkdir(parents=True)
-    os.symlink(home.fake.bin, their_home / ".local" / "bin")
-    record = home.fake.home / "claude-run"
+    record = home.fake.home / "launcher-run"
     fakes = {
-        "sudo": '#!/bin/sh\nprintf "%s\n" sudo "$@" > "$FAKE_CLAUDE_DIR/sudo-argv"\n'
-                'shift 3\nexec env -i PATH="$PATH" HOME=/nonexistent "$@"\n',
-        "getent": f'#!/bin/sh\necho "$2:x:999:999::{their_home}:/bin/bash"\n',
-        "claude": f'#!/bin/sh\n{{ pwd; env; printf "arg=%s\n" "$@"; }} > {record}\n',
+        home.fake.bin / "sudo": '#!/bin/sh\nprintf "%s\\n" sudo "$@" > "$FAKE_CLAUDE_DIR/sudo-argv"\n'
+                                'shift 3\nexec env -i PATH=/usr/bin:/bin "$@"\n',
+        home.fake.bin / "getent": '#!/bin/sh\n[ "$2" = iso-user ] && echo "iso-user:x:999:999::/srv/iso-home:/bin/bash"\n',
+        launcher: f'#!/bin/sh\n{{ pwd; env; for a in "$@"; do echo "arg=$a"; done; }} > {record}\n',
     }
-    for program, text in fakes.items():
-        (home.fake.bin / program).write_text(text)
-        (home.fake.bin / program).chmod(0o755)
+    for path, text in fakes.items():
+        path.write_text(text)
+        path.chmod(0o755)
 
     def run_user():
-        subprocess.run([str(home.root / "bin" / "run-user.sh"), "work"], timeout=30, capture_output=True,
-                       env={**os.environ, "HOME": str(home.home), "FAKE_CLAUDE_DIR": str(home.fake.home),
-                            "RUN_USER_ONCE": "1"})
+        done = subprocess.run([str(home.root / "bin" / "run-user.sh"), "work"], timeout=30, capture_output=True,
+                              text=True, env={**os.environ, "HOME": str(home.home), "FAKE_CLAUDE_DIR": str(home.fake.home),
+                                              "RUN_USER_ONCE": "1"})
         lines = record.read_text().splitlines() if record.exists() else []
-        sudo = (home.fake.home / "sudo-argv").read_text().splitlines()
+        argv_file = home.fake.home / "sudo-argv"
+        sudo = argv_file.read_text().splitlines() if argv_file.exists() else []
         return SimpleNamespace(cwd=lines[0] if lines else None, env=[line for line in lines[1:] if not line.startswith("arg=")],
-                               argv=[line[4:] for line in lines if line.startswith("arg=")], sudo=sudo, entry=entry)
+                               argv=[line[4:] for line in lines if line.startswith("arg=")], sudo=sudo, out=done.stdout)
 
-    return SimpleNamespace(run_user=run_user, entry=entry, home=their_home)
+    return SimpleNamespace(run_user=run_user, entry=entry)
 
 
-def test_run_user_isolated_uses_sudo_and_no_bypass(isolated):
+def test_run_user_isolated_runs_only_the_launcher_through_sudo(isolated):
     seen = isolated.run_user()
 
-    assert seen.sudo[:6] == ["sudo", "-n", "-u", "iso-user", "/usr/bin/env", f"HOME={isolated.home}"]
-    assert seen.cwd == isolated.entry["workspace"]
-    assert seen.argv[seen.argv.index("--permission-mode") + 1] == "default"
-    assert "bypassPermissions" not in seen.argv and "--name" in seen.argv and "--settings" in seen.argv
-    assert f"CLAUDE_CONFIG_DIR={isolated.entry['claude_config_dir']}" in seen.env
-    assert "ASSISTANT_USER=work" in seen.env and "CLAUDE_CODE_SANDBOXED=1" in seen.env
-    assert "TG_CHAT_ID=" in seen.env
+    assert seen.sudo == ["sudo", "-n", "-u", "iso-user", isolated.entry["launcher"]]
+    assert seen.argv == []  # no --permission-mode, --settings or anything else the launcher would have to trust
+    assert not any(line.startswith(("TG_CHAT_ID=", "ASSISTANT_USER=", "CLAUDE_CONFIG_DIR=")) for line in seen.env)
 
 
 def test_run_user_isolated_resumes_from_its_own_transcripts(isolated):
@@ -482,7 +476,29 @@ def test_run_user_isolated_resumes_from_its_own_transcripts(isolated):
     folder.mkdir(parents=True)
     (folder / "s.jsonl").write_text("{}")
 
-    assert "--continue" in isolated.run_user().argv
+    seen = isolated.run_user()
+
+    assert seen.sudo == ["sudo", "-n", "-u", "iso-user", isolated.entry["launcher"], "--continue"]
+    assert seen.argv == ["--continue"]
+
+
+def test_run_user_isolated_waits_when_its_linux_user_is_missing(isolated, home):
+    users = json.loads((home.root / "users.json").read_text())
+    users["work"]["isolated"]["linux_user"] = "nobody-here"
+    (home.root / "users.json").write_text(json.dumps(users))
+    (home.fake.bin / "sleep").write_text("#!/bin/sh\nexit 0\n")  # its wait before the loop starts over
+    (home.fake.bin / "sleep").chmod(0o755)
+
+    seen = isolated.run_user()
+
+    assert seen.sudo == [] and "no Linux user nobody-here" in seen.out
+
+
+def test_jobs_are_refused_for_an_isolated_person(isolated, home):
+    r = home.run("job", "--user", "work", "hello")
+
+    assert r.returncode != 0 and "runs as another Linux user" in r.stderr
+    assert home.fake.calls == []
 
 
 def test_start_users_starts_isolated_without_home_workspace(isolated, no_sessions):

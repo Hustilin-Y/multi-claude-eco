@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from conftest import nowhere
+from conftest import ISOLATED, nowhere
 
 
 def test_paths_follow_the_environment(lib, tmp_path):
@@ -199,10 +199,6 @@ def test_users(lib):
     assert (loaded["b"].entry, loaded["b"].get("quiet_hours")) == ({"telegram_id": 2, "display": "Bee"}, None)
 
 
-ISOLATED = {"linux_user": "iso-user", "workspace": "/srv/isolated/workspace",
-            "claude_config_dir": "/srv/isolated/claude", "permission_mode": "default"}
-
-
 def test_isolated_user_workspace_and_claude_dir(lib):
     from pathlib import Path
     from multiclaude import jsonfile, paths, users
@@ -221,11 +217,25 @@ def test_plain_user_unchanged(lib):
     assert u.isolated is None and u.workspace == paths.workspace("ada") and u.claude_dir == paths.CLAUDE_DIR
 
 
-def test_isolated_needs_all_four_fields(lib):
+@pytest.mark.parametrize("left_out", ["permission_mode", "launcher"])
+def test_isolated_needs_every_field(lib, left_out):
     from multiclaude import jsonfile, paths, users
-    half = {k: v for k, v in ISOLATED.items() if k != "permission_mode"}
+    half = {k: v for k, v in ISOLATED.items() if k != left_out}
     jsonfile.write_json(paths.USERS, {"work": {"telegram_id": "5", "isolated": half}})
-    with pytest.raises(ValueError, match="permission_mode"):
+    with pytest.raises(ValueError, match=left_out):
+        users.load_users()
+
+
+@pytest.mark.parametrize("change, why", [
+    ({"permission_mode": "bypassPermissions"}, "bypassPermissions"),
+    ({"linux_user": "-iso-user"}, "can't start with -"),
+    ({"launcher": "bin/launch-claude"}, "launcher must be absolute"),
+    ({"workspace": "isolated/workspace"}, "workspace must be absolute"),
+])
+def test_isolated_refuses_what_would_loosen_or_confuse_it(lib, change, why):
+    from multiclaude import jsonfile, paths, users
+    jsonfile.write_json(paths.USERS, {"work": {"telegram_id": "5", "isolated": {**ISOLATED, **change}}})
+    with pytest.raises(ValueError, match=why):
         users.load_users()
 
 

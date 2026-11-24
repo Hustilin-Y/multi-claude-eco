@@ -5,9 +5,11 @@
 # if it exits. The router types the user's messages into it, and it replies with `tg`
 # (or an add-in's command, for an app the add-in brings).
 #
-# A person with an "isolated" entry in users.json (workspace, Claude config dir, Linux user) runs
-# as that Linux user through sudo, with its own login, no bot env and no `tg`, and with the
-# permission mode set there instead of bypassPermissions.
+# A person with an "isolated" entry in users.json runs as that entry's Linux user: this script only runs
+# its launcher through sudo (`sudo -n -u LINUX_USER LAUNCHER [--continue]`), a root-owned program that
+# sudoers lets this user run as them and nothing else. The launcher sets up their environment and
+# workspace and starts claude with its own fixed flags, so nothing typed here can loosen its permission
+# mode or settings. No bot env and no `tg` reach it.
 set -u
 
 name=${1:?usage: run-user.sh NAME [fresh]}
@@ -17,13 +19,14 @@ WS=$(user_workspace "$name")
 SESSIONS=$(user_project_dir "$name")
 QUICK_EXIT=30  # a session that dies sooner than this after starting isn't resumed next time
 lu=$(user_isolated "$name" linux_user)
-mode=bypassPermissions
 
 if [ -n "$lu" ]; then
-  mode=$(user_isolated "$name" permission_mode)
-  claude_dir=$(user_isolated "$name" claude_config_dir)
-  lhome=$(getent passwd "$lu" | cut -d: -f6)
-  [ -n "$lhome" ] || { echo "no Linux user $lu"; sleep 60; exit 1; }
+  launcher=$(user_isolated "$name" launcher)
+  getent passwd "$lu" >/dev/null || { echo "no Linux user $lu"; sleep 60; exit 1; }
+  case "$launcher" in
+    /*) ;;
+    *) echo "no launcher for $name: isolated.launcher must be an absolute path"; sleep 60; exit 1 ;;
+  esac
 else
   cd "$WS" || { echo "no workspace at $WS"; sleep 60; exit 1; }
   load_env
@@ -38,22 +41,17 @@ fi
 resume=1
 [ "${2:-}" = fresh ] && resume=0  # /restart: begin with a new conversation
 while true; do
-  args=(--permission-mode "$mode" --name "$name" --settings "$TELEGRAM_PLUGIN_OFF")
+  resumed=()
   # Pick up the previous conversation so context survives restarts. If that
   # session dies right away (e.g. it's corrupt), start fresh next time.
   if [ "$resume" = 1 ] && compgen -G "$SESSIONS/*.jsonl" >/dev/null; then
-    args+=(--continue)
+    resumed=(--continue)
   fi
   started=$(date +%s)
   if [ -n "$lu" ]; then
-    # The workspace is the other user's: cd into it as them. The absolute /usr/bin/env is the one
-    # command sudoers lets this user run as them.
-    sudo -n -u "$lu" /usr/bin/env HOME="$lhome" CLAUDE_CONFIG_DIR="$claude_dir" \
-      PATH="$lhome/.local/bin:$lhome/.bun/bin:/usr/local/bin:/usr/bin:/bin" \
-      TG_CHAT_ID= ASSISTANT_USER="$name" CLAUDE_CODE_SANDBOXED=1 \
-      bash -c 'cd "$1" && exec claude "${@:2}"' _ "$WS" "${args[@]}"
+    sudo -n -u "$lu" "$launcher" "${resumed[@]}"
   else
-    claude "${args[@]}"
+    claude --permission-mode bypassPermissions --name "$name" --settings "$TELEGRAM_PLUGIN_OFF" "${resumed[@]}"
   fi
   code=$?
   [ "${RUN_USER_ONCE:-}" = 1 ] && exit "$code"  # for tests: one pass

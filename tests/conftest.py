@@ -24,6 +24,9 @@ import pytest
 REPO = Path(__file__).resolve().parent.parent
 BIN = REPO / "bin"
 ALICE_CHAT, BOB_CHAT = "100", "101"
+# A person whose session runs as another Linux user (users.json "isolated", users.check_isolated).
+ISOLATED = {"linux_user": "iso-user", "workspace": "/srv/isolated/workspace", "claude_config_dir": "/srv/isolated/claude",
+            "permission_mode": "default", "launcher": "/srv/isolated/bin/launch-claude"}
 
 FAKE_CLAUDE = r'''#!/usr/bin/env python3
 """Records each call in $FAKE_CLAUDE_DIR/calls.jsonl and answers from rules.json:

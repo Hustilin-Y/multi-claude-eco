@@ -10,7 +10,14 @@ from pathlib import Path
 
 from multiclaude import jsonfile, paths
 
-ISOLATED_FIELDS = ("linux_user", "workspace", "claude_config_dir", "permission_mode")
+# An "isolated" entry: the Linux user their session runs as, its workspace and Claude config dir, the permission mode
+# it runs in, and the launcher, a root-owned program that sudoers lets the router's user run as linux_user and
+# that starts claude there with its own fixed flags (bin/run-user.sh passes it nothing but --continue).
+ISOLATED_FIELDS = ("linux_user", "workspace", "claude_config_dir", "permission_mode", "launcher")
+ISOLATED_PATHS = ("workspace", "claude_config_dir", "launcher")  # absolute paths
+# What the bot answers an isolated person's /plugin, /skills, /mcp, /model and /effort: their session is another
+# Linux user's, whose settings the router doesn't write.
+SET_UP_BY_HAND = "This person's tools are set up by hand on the machine."
 
 
 @dataclass(frozen=True)
@@ -28,8 +35,8 @@ class User:
 
     @property
     def isolated(self):
-        """For a person whose session runs as another Linux user: {"linux_user", "workspace",
-        "claude_config_dir", "permission_mode"}, all four set. None for everyone else."""
+        """For a person whose session runs as another Linux user: their "isolated" entry, with every one of
+        ISOLATED_FIELDS set. None for everyone else."""
         return self.entry.get("isolated") or None
 
     @property
@@ -59,13 +66,21 @@ def load_users():
 
 
 def check_isolated(name, isolated):
-    """ValueError unless isolated, a person's field of that name, is absent or has all four values."""
+    """ValueError unless isolated, a person's field of that name, is absent or has every one of ISOLATED_FIELDS:
+    the paths absolute, a linux_user that can't pass for an option, and never bypassPermissions."""
     if isolated is None:
         return
     missing = [k for k in ISOLATED_FIELDS if not isinstance(isolated, dict) or not isinstance(isolated.get(k), str)
                or not isolated[k]]
     if missing:
         raise ValueError(f"{paths.USERS}: {name}: isolated needs {', '.join(missing)}")
+    relative = [k for k in ISOLATED_PATHS if not isolated[k].startswith("/")]
+    if relative:
+        raise ValueError(f"{paths.USERS}: {name}: isolated {', '.join(relative)} must be absolute paths")
+    if isolated["linux_user"].startswith("-"):
+        raise ValueError(f"{paths.USERS}: {name}: isolated linux_user can't start with -")
+    if isolated["permission_mode"] == "bypassPermissions":
+        raise ValueError(f"{paths.USERS}: {name}: isolated permission_mode can't be bypassPermissions")
 
 
 def update(name, field, value):

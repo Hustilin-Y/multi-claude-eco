@@ -116,9 +116,12 @@ class Desk:
         self.users_mtime = mtime
         self.by_chat = {u.chat_id: name for name, u in found.items()}
         for name, u in found.items():
-            if name not in self.users or self.users[name].chat_id != u.chat_id:
-                self.users[name] = Session(name, u.pane, paths.project_dir(u.workspace, u.claude_dir), u.chat_id, u.display,
-                                            workspace=u.workspace)
+            project = paths.project_dir(u.workspace, u.claude_dir)
+            known = self.users.get(name)
+            # A new chat, or a person who became isolated (or stopped being), is followed afresh: their transcripts
+            # and workspace are somewhere else now.
+            if known is None or known.chat_id != u.chat_id or known.workspace != u.workspace or str(known.tail.dir) != str(project):
+                self.users[name] = Session(name, u.pane, project, u.chat_id, u.display, workspace=u.workspace)
                 self.start_worker(self.users[name])
                 log(f"user {name} (Telegram {u.chat_id}): {self.users[name].tail.dir}")
             session = self.users[name]
@@ -373,6 +376,9 @@ class Desk:
         user.say(usage.usage_text(user, self.displays()))
 
     def mcp_login(self, user, server, waiting):
+        if user.entry.get("isolated"):  # `claude mcp login` would run as the router's user, not theirs
+            telegram.later(user.say, registry.SET_UP_BY_HAND)
+            return
         if not server:
             telegram.later(user.say, "Usage: `/mcp login <name>`. `/mcp` lists your servers.")
         elif server.lower() == "cancel":
@@ -385,6 +391,9 @@ class Desk:
             in_background(mcp_login.McpLogin(user, server).run)
 
     def switch(self, user, setting, target, keep, now):
+        if user.entry.get("isolated"):  # their settings are another Linux user's, which the router doesn't write
+            telegram.later(user.say, registry.SET_UP_BY_HAND)
+            return
         if not target:
             telegram.later(user.say, switching.current(user, setting))
             return

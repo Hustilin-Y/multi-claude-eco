@@ -53,7 +53,7 @@ def dispatch(name, text):
     if p is None:
         return Reply(f"No user {name}.")
     if p.isolated:
-        return Reply("This person's tools are set up by hand on the machine.")
+        return Reply(users.SET_UP_BY_HAND)
     words = text.split()
     head = words[0].lstrip("/").partition("@")[0].lower() if words else ""
     args = words[1:]

@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from conftest import read_json, write_json
+from conftest import ISOLATED, read_json, write_json
 
 OFFICIAL = "claude-plugins-official"
 FOO = f"foo@{OFFICIAL}"
@@ -312,8 +312,6 @@ def test_sync_baseline_holds_what_was_in_user_scope_before_the_first_run(box):
 
 # --- the router's command contract -------------------------------------------------------------
 
-ISOLATED = {"linux_user": "iso-user", "workspace": "/srv/isolated/workspace",
-            "claude_config_dir": "/srv/isolated/claude", "permission_mode": "default"}
 BY_HAND = "This person's tools are set up by hand on the machine."
 
 

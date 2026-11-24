@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import (ALICE_CHAT, BOB_CHAT, FakeProc, append, block_text, channel, read_json, sent, shown, transcript,
+from conftest import (ALICE_CHAT, BOB_CHAT, ISOLATED, FakeProc, append, block_text, channel, read_json, sent, shown, transcript,
                       write_json)
 
 
@@ -1188,10 +1188,6 @@ def test_load_users_follows_users_json(r, desk):
     assert desk.owner is None
 
 
-ISOLATED = {"linux_user": "iso-user", "workspace": "/srv/isolated/workspace",
-            "claude_config_dir": "/srv/isolated/claude", "permission_mode": "default"}
-
-
 def test_an_isolated_person_is_followed_in_their_own_claude_dir(r, desk):
     write_json(r.paths.USERS, {"alice": {"telegram_id": ALICE_CHAT, "display": "Alice", "role": "owner"},
                                "work": {"telegram_id": "5", "display": "Work", "isolated": ISOLATED}})
@@ -1200,6 +1196,41 @@ def test_an_isolated_person_is_followed_in_their_own_claude_dir(r, desk):
 
     assert desk.users["work"].tail.dir == "/srv/isolated/claude/projects/-srv-isolated-workspace"
     assert desk.users["alice"].tail.dir.endswith("-workspaces-alice")
+
+
+def test_a_person_who_becomes_isolated_is_followed_in_their_new_claude_dir(r, desk):
+    write_json(r.paths.USERS, {"alice": {"telegram_id": ALICE_CHAT, "display": "Alice", "role": "owner"},
+                               "work": {"telegram_id": "5", "display": "Work"}})
+    os.utime(r.paths.USERS, (time.time() + 5, time.time() + 5))
+    desk.load_users()
+    assert desk.users["work"].tail.dir.endswith("-workspaces-work")
+
+    write_json(r.paths.USERS, {"alice": {"telegram_id": ALICE_CHAT, "display": "Alice", "role": "owner"},
+                               "work": {"telegram_id": "5", "display": "Work", "isolated": ISOLATED}})
+    os.utime(r.paths.USERS, (time.time() + 10, time.time() + 10))
+    desk.load_users()
+
+    assert desk.users["work"].tail.dir == "/srv/isolated/claude/projects/-srv-isolated-workspace"
+    assert desk.users["work"].workspace == Path("/srv/isolated/workspace")
+
+
+def isolated_desk(r, desk):
+    write_json(r.paths.USERS, {"alice": {"telegram_id": ALICE_CHAT, "display": "Alice", "role": "owner"},
+                               "work": {"telegram_id": "5", "display": "Work", "isolated": ISOLATED}})
+    os.utime(r.paths.USERS, (time.time() + 5, time.time() + 5))
+    desk.load_users()
+    return desk.users["work"]
+
+
+@pytest.mark.parametrize("text", ["/model", "/model opus", "/model opus default", "/effort high default", "/mcp login srv"])
+def test_model_effort_and_mcp_login_are_set_up_by_hand_for_an_isolated_person(r, desk, text):
+    from multiclaude import users
+    work = isolated_desk(r, desk)
+
+    desk.inbound(channel(text, chat="5"))
+
+    assert sent(r, "5") == [users.SET_UP_BY_HAND]
+    assert work.queue == []
 
 
 def test_tasks_kept_for_an_isolated_person_are_looked_up_in_their_workspace(r, tmp_path):
