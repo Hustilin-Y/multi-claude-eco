@@ -32,10 +32,11 @@ def skill_dirs(base):
 class Person:
     """One person's workspace settings and skills, read once."""
 
-    def __init__(self, name, display):
-        self.name, self.display = name, display
-        self.ws = paths.workspace(name)
-        self.files = {s: paths.workspace_settings(name, s) for s in SCOPES}
+    def __init__(self, name, display, ws=None, isolated=False):
+        self.name, self.display, self.isolated = name, display, isolated
+        self.ws = ws or paths.workspace(name)
+        self.files = {s: self.ws / ".claude" / ("settings.json" if s == "project" else "settings.local.json")
+                      for s in SCOPES}
         self.settings, self.broken = {}, []
         for s in SCOPES:
             try:
@@ -81,13 +82,15 @@ class Person:
 
 
 def load_people():
-    return [Person(u.name, u.display) for u in users.load_users().values()]
+    """Everyone whose folder is shared. A person whose session runs as another Linux user (isolated) is left out:
+    nothing is shared with them or from them."""
+    return [Person(u.name, u.display, u.workspace) for u in users.load_users().values() if not u.isolated]
 
 
 def load_person(name):
     """The registered person called name, or None."""
     user = users.load_users().get(name)
-    return Person(user.name, user.display) if user else None
+    return Person(user.name, user.display, user.workspace, bool(user.isolated)) if user else None
 
 
 def everyone_has(people, per_person):

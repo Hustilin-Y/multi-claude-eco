@@ -6,7 +6,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from pathlib import Path
+
 from multiclaude import jsonfile, paths
+
+ISOLATED_FIELDS = ("linux_user", "workspace", "claude_config_dir", "permission_mode")
 
 
 @dataclass(frozen=True)
@@ -23,8 +27,19 @@ class User:
         return self.entry.get(key, default)
 
     @property
+    def isolated(self):
+        """For a person whose session runs as another Linux user: {"linux_user", "workspace",
+        "claude_config_dir", "permission_mode"}, all four set. None for everyone else."""
+        return self.entry.get("isolated") or None
+
+    @property
     def workspace(self):
-        return paths.workspace(self.name)
+        return Path(self.isolated["workspace"]) if self.isolated else paths.workspace(self.name)
+
+    @property
+    def claude_dir(self):
+        """Where Claude Code keeps their config and transcripts."""
+        return Path(self.isolated["claude_config_dir"]) if self.isolated else paths.CLAUDE_DIR
 
     @property
     def pane(self):
@@ -36,9 +51,21 @@ def load_users():
     """{name: User}. OSError or ValueError if users.json can't be read."""
     with open(paths.USERS) as f:
         raw = json.load(f)
+    for name, info in raw.items():
+        check_isolated(name, info.get("isolated"))
     return {name: User(name, str(info.get("telegram_id", "")), info.get("display") or name, info.get("role") or "member",
                        info.get("timezone") or "UTC", dict(info))
             for name, info in sorted(raw.items())}
+
+
+def check_isolated(name, isolated):
+    """ValueError unless isolated, a person's field of that name, is absent or has all four values."""
+    if isolated is None:
+        return
+    missing = [k for k in ISOLATED_FIELDS if not isinstance(isolated, dict) or not isinstance(isolated.get(k), str)
+               or not isolated[k]]
+    if missing:
+        raise ValueError(f"{paths.USERS}: {name}: isolated needs {', '.join(missing)}")
 
 
 def update(name, field, value):

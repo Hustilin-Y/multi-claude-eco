@@ -199,6 +199,36 @@ def test_users(lib):
     assert (loaded["b"].entry, loaded["b"].get("quiet_hours")) == ({"telegram_id": 2, "display": "Bee"}, None)
 
 
+ISOLATED = {"linux_user": "iso-user", "workspace": "/srv/isolated/workspace",
+            "claude_config_dir": "/srv/isolated/claude", "permission_mode": "default"}
+
+
+def test_isolated_user_workspace_and_claude_dir(lib):
+    from pathlib import Path
+    from multiclaude import jsonfile, paths, users
+    jsonfile.write_json(paths.USERS, {"work": {"telegram_id": "5", "isolated": ISOLATED}})
+    u = users.load_users()["work"]
+    assert u.isolated == ISOLATED
+    assert u.workspace == Path("/srv/isolated/workspace")
+    assert u.claude_dir == Path("/srv/isolated/claude")
+    assert paths.project_dir(u.workspace, u.claude_dir) == Path("/srv/isolated/claude/projects/-srv-isolated-workspace")
+
+
+def test_plain_user_unchanged(lib):
+    from multiclaude import jsonfile, paths, users
+    jsonfile.write_json(paths.USERS, {"ada": {"telegram_id": "1"}})
+    u = users.load_users()["ada"]
+    assert u.isolated is None and u.workspace == paths.workspace("ada") and u.claude_dir == paths.CLAUDE_DIR
+
+
+def test_isolated_needs_all_four_fields(lib):
+    from multiclaude import jsonfile, paths, users
+    half = {k: v for k, v in ISOLATED.items() if k != "permission_mode"}
+    jsonfile.write_json(paths.USERS, {"work": {"telegram_id": "5", "isolated": half}})
+    with pytest.raises(ValueError, match="permission_mode"):
+        users.load_users()
+
+
 def test_local_time_is_in_the_persons_own_timezone(lib):
     from multiclaude import jsonfile, paths, users
     jsonfile.write_json(paths.USERS, {"alice": {"telegram_id": "1", "timezone": "Europe/Helsinki"},

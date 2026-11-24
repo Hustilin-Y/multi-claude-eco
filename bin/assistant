@@ -361,7 +361,7 @@ cmd_start_users() {
   local names name failed=0
   names=$(jq -r 'keys[]' "$USERS") || die "can't read $USERS"
   for name in $names; do
-    [ -d "$HOME/workspaces/$name" ] || continue
+    [ -d "$(user_workspace "$name")" ] || continue
     asleep "$name" && continue
     start_user "$name" || failed=1
   done
@@ -383,7 +383,7 @@ start_user() {
 # The router does this for its person's next message, with fresh for their /restart.
 cmd_wake() {
   local name="${1:-}"
-  [ -n "$name" ] && [ -d "$HOME/workspaces/$name" ] || die "usage: assistant wake <name>"
+  [ -n "$name" ] && [ -d "$(user_workspace "$name")" ] || die "usage: assistant wake <name>"
   rm -f "$ROOT/state/asleep/$name"
   start_user "$name" ${2:+"$2"}
 }

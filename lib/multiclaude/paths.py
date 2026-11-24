@@ -55,9 +55,10 @@ def workspace(name):
     return WORKSPACES / name
 
 
-def project_dir(folder):
-    """The folder where Claude Code keeps the transcripts of sessions started in folder."""
-    return PROJECTS / re.sub(r"[^A-Za-z0-9]", "-", str(folder))
+def project_dir(folder, claude_dir=None):
+    """The folder where Claude Code keeps the transcripts of sessions started in folder, under
+    claude_dir (a person's own, see users.User.claude_dir) or ~/.claude."""
+    return (Path(claude_dir) / "projects" if claude_dir else PROJECTS) / re.sub(r"[^A-Za-z0-9]", "-", str(folder))
 
 
 def workspace_settings(name, scope="project"):

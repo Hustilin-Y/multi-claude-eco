@@ -61,7 +61,7 @@ class McpLogin:
 
     def start(self):
         self.master, slave = pty.openpty()
-        ws = paths.workspace(self.user.name)
+        ws = self.user.workspace
         try:
             fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", *TERMINAL_SIZE, 0, 0))
             self.proc = subprocess.Popen([paths.CLAUDE, "mcp", "login", self.server, "--no-browser"], cwd=ws,

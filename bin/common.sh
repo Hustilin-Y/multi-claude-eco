@@ -39,5 +39,20 @@ frontdesk() {
 # (lib/multiclaude/asleep.py).
 asleep() { [ -e "$ROOT/state/asleep/$1" ]; }
 
-# The folder where Claude Code keeps the transcripts of sessions started in a folder.
-project_dir() { printf '%s/.claude/projects/%s' "$HOME" "$(printf '%s' "$1" | sed 's/[^A-Za-z0-9]/-/g')"; }
+# The folder where Claude Code keeps the transcripts of sessions started in a folder, under a
+# Claude config dir (~/.claude when none is given).
+project_dir() { printf '%s/projects/%s' "${2:-$HOME/.claude}" "$(printf '%s' "$1" | sed 's/[^A-Za-z0-9]/-/g')"; }
+
+# user_isolated NAME FIELD: a field of the "isolated" entry of a person who runs as another Linux
+# user (linux_user, workspace, claude_config_dir, permission_mode), empty for everyone else.
+user_isolated() { jq -r --arg n "$1" --arg f "$2" '.[$n].isolated[$f] // empty' "$USERS" 2>/dev/null; }
+# user_workspace NAME: the folder their assistant works in.
+user_workspace() {
+  jq -r --arg n "$1" --arg h "$HOME" '.[$n].isolated.workspace // "\($h)/workspaces/\($n)"' "$USERS" 2>/dev/null
+}
+# user_project_dir NAME: where Claude Code keeps the transcripts of their assistant's sessions.
+user_project_dir() {
+  local claude_dir
+  claude_dir=$(jq -r --arg n "$1" --arg h "$HOME" '.[$n].isolated.claude_config_dir // "\($h)/.claude"' "$USERS" 2>/dev/null)
+  project_dir "$(user_workspace "$1")" "$claude_dir"
+}

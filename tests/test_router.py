@@ -1188,6 +1188,28 @@ def test_load_users_follows_users_json(r, desk):
     assert desk.owner is None
 
 
+ISOLATED = {"linux_user": "iso-user", "workspace": "/srv/isolated/workspace",
+            "claude_config_dir": "/srv/isolated/claude", "permission_mode": "default"}
+
+
+def test_an_isolated_person_is_followed_in_their_own_claude_dir(r, desk):
+    write_json(r.paths.USERS, {"alice": {"telegram_id": ALICE_CHAT, "display": "Alice", "role": "owner"},
+                               "work": {"telegram_id": "5", "display": "Work", "isolated": ISOLATED}})
+    os.utime(r.paths.USERS, (time.time() + 5, time.time() + 5))
+    desk.load_users()
+
+    assert desk.users["work"].tail.dir == "/srv/isolated/claude/projects/-srv-isolated-workspace"
+    assert desk.users["alice"].tail.dir.endswith("-workspaces-alice")
+
+
+def test_tasks_kept_for_an_isolated_person_are_looked_up_in_their_workspace(r, tmp_path):
+    folder = tmp_path / "elsewhere"
+    write_json(folder / ".claude" / "scheduled_tasks.json", {"tasks": [{"cron": "0 9 * * *"}]})
+    session = r.session.Session("work", "u-work", "/nowhere", "5", "Work", workspace=folder)
+
+    assert session.schedules_inside(time.time(), running_for=60)
+
+
 # --- resilience --------------------------------------------------------------------------------
 
 def desk_transcript(r):

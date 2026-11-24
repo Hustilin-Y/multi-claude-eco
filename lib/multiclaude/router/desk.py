@@ -117,7 +117,8 @@ class Desk:
         self.by_chat = {u.chat_id: name for name, u in found.items()}
         for name, u in found.items():
             if name not in self.users or self.users[name].chat_id != u.chat_id:
-                self.users[name] = Session(name, u.pane, paths.project_dir(u.workspace), u.chat_id, u.display)
+                self.users[name] = Session(name, u.pane, paths.project_dir(u.workspace, u.claude_dir), u.chat_id, u.display,
+                                            workspace=u.workspace)
                 self.start_worker(self.users[name])
                 log(f"user {name} (Telegram {u.chat_id}): {self.users[name].tail.dir}")
             session = self.users[name]

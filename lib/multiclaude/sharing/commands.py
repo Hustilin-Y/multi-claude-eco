@@ -52,6 +52,8 @@ def dispatch(name, text):
     p = load_person(name)
     if p is None:
         return Reply(f"No user {name}.")
+    if p.isolated:
+        return Reply("This person's tools are set up by hand on the machine.")
     words = text.split()
     head = words[0].lstrip("/").partition("@")[0].lower() if words else ""
     args = words[1:]
@@ -317,8 +319,9 @@ def set_skill_level(p, name, level):
 def copy_from_someone_else(p, name):
     """Turned off while it was shared, the skill went back to the others: copy theirs."""
     for other in users.load_users().values():
-        if other.name != p.name and (other.workspace / ".claude" / "skills" / name / "SKILL.md").is_file():
-            skillfiles.copy_skill(other.workspace / ".claude" / "skills" / name, p.skills_dir / name)
+        theirs = other.workspace / ".claude" / "skills" / name
+        if other.name != p.name and not other.isolated and (theirs / "SKILL.md").is_file():
+            skillfiles.copy_skill(theirs, p.skills_dir / name)
             return f" Copied it into your folder from {other.display}'s."
     return ""
 

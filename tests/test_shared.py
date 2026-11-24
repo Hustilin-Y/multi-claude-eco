@@ -312,6 +312,41 @@ def test_sync_baseline_holds_what_was_in_user_scope_before_the_first_run(box):
 
 # --- the router's command contract -------------------------------------------------------------
 
+ISOLATED = {"linux_user": "iso-user", "workspace": "/srv/isolated/workspace",
+            "claude_config_dir": "/srv/isolated/claude", "permission_mode": "default"}
+BY_HAND = "This person's tools are set up by hand on the machine."
+
+
+def add_isolated(box):
+    users = read_json(box.root / "users.json")
+    write_json(box.root / "users.json", {**users, "work": {"telegram_id": "7", "display": "Work", "isolated": ISOLATED}})
+
+
+def test_sync_skips_isolated_person(box):
+    box.users("alice", "bob")
+    for name in ("alice", "bob"):
+        box.settings(name, {"enabledPlugins": {FOO: True}})
+    add_isolated(box)  # has nothing, and the sync must neither count that nor touch its workspace
+
+    rc, _, _ = box.shared("sync")
+
+    assert rc == 0
+    assert box.manifest()["plugins"] == [FOO]
+    assert not (box.workspaces / "work").exists()
+
+
+@pytest.mark.parametrize("text", ["/plugin", "/plugin install foo@m", "/skills", "/skills off notes", "/mcp",
+                                  "/mcp add x -- cmd"])
+def test_plugin_command_refused_for_isolated(box, text):
+    box.users("alice")
+    add_isolated(box)
+
+    reply = box.command("work", text)
+
+    assert reply == {"text": BY_HAND, "reload": False}
+    assert box.fake.argvs() == []
+
+
 def test_command_for_an_unknown_person(box):
     box.users("alice")
 

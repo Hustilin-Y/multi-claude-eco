@@ -41,9 +41,10 @@ SCREENS_KEPT = 20         # saved screens per session; older ones are deleted
 class Session:
     """A Claude Code session: the front desk, or a person's assistant with its queue (router/work.py)."""
 
-    def __init__(self, name, pane, project_dir, chat_id=None, display=None):
+    def __init__(self, name, pane, project_dir, chat_id=None, display=None, workspace=None):
         self.name, self.chat_id, self.display = name, chat_id, display or name
         self.reply_to = TelegramChat(chat_id) if chat_id else None  # the chat of their latest message (channels.py)
+        self.workspace = workspace or paths.workspace(name)  # where their claude runs
         self.entry = {}                # their users.json entry as it is, where add-ins find their own fields
         self.addon_state = {}          # what add-ins remember about this session, by add-in name
         self.pane = tmux.Pane(pane)
@@ -202,7 +203,7 @@ class Session:
         Claude Code keeps for the folder (.claude/scheduled_tasks.json)."""
         if self.scheduled >= now - running_for:
             return True
-        kept = jsonfile.read_json(paths.workspace(self.name) / ".claude" / "scheduled_tasks.json")
+        kept = jsonfile.read_json(self.workspace / ".claude" / "scheduled_tasks.json")
         return bool(kept.get("tasks") if isinstance(kept, dict) else kept)
 
     def can_hibernate(self, now, proc, after):
