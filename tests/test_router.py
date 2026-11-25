@@ -160,6 +160,33 @@ def test_session_stays_busy_while_messages_are_queued(r, tmp_path):
     assert turn.busy
 
 
+def turn_ended_with_one_item_counted_as_queued(r, tmp_path):
+    from multiclaude.router.turn import QUEUED_TURN_GRACE
+    s = session(r, tmp_path)
+    s.turn.handle({"type": "queue-operation", "operation": "enqueue"})
+    s.turn.handle({"type": "system", "subtype": "turn_duration"})
+    s.turn.last_write = time.time() - QUEUED_TURN_GRACE - 1
+    return s
+
+
+def test_a_turn_ends_when_no_turn_starts_for_what_was_counted_as_queued(r, tmp_path):
+    s = turn_ended_with_one_item_counted_as_queued(r, tmp_path)
+
+    s.read(time.time())
+
+    assert (s.turn.busy, s.turn.pending, s.turn.notice) == (False, 0, None)
+
+
+def test_a_queued_message_that_starts_its_turn_keeps_the_session_busy(r, tmp_path):
+    s = turn_ended_with_one_item_counted_as_queued(r, tmp_path)
+    s.turn.handle({"type": "queue-operation", "operation": "dequeue"})
+    s.turn.handle({"type": "user", "message": {"content": "the queued message"}})
+
+    s.turn.settle(time.time())
+
+    assert s.turn.busy
+
+
 @pytest.mark.parametrize("content", ["[Request interrupted by user]",
                                      [{"type": "text", "text": "[Request interrupted by user for tool use]"}]])
 def test_escape_ends_the_turn(r, tmp_path, content):
