@@ -30,21 +30,26 @@ def skill_dirs(base):
 
 
 class Person:
-    """One person's workspace settings and skills, read once."""
+    """One person's workspace settings and skills, read once. An isolated person's workspace belongs to
+    another Linux user that the router's user can't read, so nothing of it is read: they count as having
+    no plugins and no skills."""
 
     def __init__(self, name, display, ws=None, isolated=False):
         self.name, self.display, self.isolated = name, display, isolated
         self.ws = ws or paths.workspace(name)
         self.files = {s: self.ws / ".claude" / ("settings.json" if s == "project" else "settings.local.json")
                       for s in SCOPES}
-        self.settings, self.broken = {}, []
+        self.settings, self.broken = {s: {} for s in SCOPES}, []
+        self.skills_dir = self.ws / ".claude" / "skills"
+        self.skills = {}
+        if isolated:
+            return
         for s in SCOPES:
             try:
                 self.settings[s] = jsonfile.read_object(self.files[s])
             except jsonfile.NotAnObject:
                 self.settings[s] = {}  # counts as having nothing, and is never written
                 self.broken.append(self.files[s])
-        self.skills_dir = self.ws / ".claude" / "skills"
         self.skills = {n: tree_hash(d) for n, d in skill_dirs(self.skills_dir).items()}
 
     def merged(self, section):

@@ -320,6 +320,23 @@ def add_isolated(box):
     write_json(box.root / "users.json", {**users, "work": {"telegram_id": "7", "display": "Work", "isolated": ISOLATED}})
 
 
+def test_an_isolated_person_workspace_is_never_read(shared, tmp_path):
+    from multiclaude.sharing import inventory
+    from multiclaude.sharing.people import Person
+
+    ws = tmp_path / "work"
+    (ws / ".claude" / "skills" / "notes").mkdir(parents=True)
+    (ws / ".claude" / "skills" / "notes" / "SKILL.md").write_text("x")
+    settings = ws / ".claude" / "settings.json"
+    write_json(settings, {"enabledPlugins": {FOO: True}})
+    settings.chmod(0)  # the router's user can't read it, as on a real machine
+
+    p = Person("work", "Work", ws, isolated=True)
+
+    assert p.plugins == {} and p.skills == {} and p.broken == []
+    assert inventory.plugins(p) == [] and inventory.skills(p) == []
+
+
 def test_sync_skips_isolated_person(box):
     box.users("alice", "bob")
     for name in ("alice", "bob"):

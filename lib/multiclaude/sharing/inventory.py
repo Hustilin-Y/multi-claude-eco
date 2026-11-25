@@ -17,7 +17,9 @@ WHEN_TO_USE_RE = re.compile(r"(?<=[.!?])\s+(?:Use (?:it |this )?(?:when|whenever
 
 def plugins(p):
     """[{id, name, marketplace, on, shared, description, servers, skills, code}] for every plugin the
-    person has on or has turned off, by name."""
+    person has on or has turned off, by name. None for an isolated person: theirs are set up by hand."""
+    if p.isolated:
+        return []
     shared = user_plugins()
     marketplaces = jsonfile.read_json(PLUGINS_DIR / "known_marketplaces.json", {})
     installed = jsonfile.read_json(PLUGINS_DIR / "installed_plugins.json", {}).get("plugins") or {}
@@ -38,7 +40,9 @@ def plugins(p):
 def skills(p):
     """[{name, on, shared, description}] for the person's own skills, the shared ones, and any other
     they turned off (a plugin's or a built-in one), by name. A plugin's skills otherwise come and go
-    with it, so they aren't listed."""
+    with it, so they aren't listed. None for an isolated person, as for plugins."""
+    if p.isolated:
+        return []
     own, shared = skill_dirs(p.skills_dir), skill_dirs(USER_SKILLS)
     turned_off = {n for n, level in p.merged("skillOverrides").items() if level != "on"}
     return [{"name": n, "on": n not in turned_off, "shared": n in shared and n not in own,
