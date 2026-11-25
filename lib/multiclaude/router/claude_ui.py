@@ -180,21 +180,47 @@ def dialog_top(lines, ask):
     return max((i for i in above if lines[i].lstrip().startswith(CONVERSATION_MARKS)), default=-1)
 
 
-def choose(pane, dialog, word):
+def choose(pane, dialog, word, read=None):
     """Move the dialog's cursor to the option starting with word, check it got there, press
-    Enter. (Number keys aren't used: some of them answer at once.) Returns a problem, or None."""
+    Enter. (Number keys aren't used: some of them answer at once.) read reads the dialog off the
+    screen again (approval_dialog unless said). Returns a problem, or None."""
     target = dialog.find(word)
     if target is None:
         return f"the dialog has no {word} option"
     pane.press("Down" if target > dialog.cursor else "Up", times=abs(target - dialog.cursor))
     time.sleep(SETTLE)
-    now = approval_dialog(pane.screen())
+    now = (read or approval_dialog)(pane.screen())
     if now is None or now.text != dialog.text:
         return "the dialog closed meanwhile"
     if now.cursor != target:
         return f"couldn't move the cursor to {word}"
     pane.press("Enter")
     return None
+
+
+# Claude Code's question after the model's safeguards stopped a reply: "<model>'s safeguards flagged
+# this session. ... Switch to <another model> and keep going whenever this happens?", then numbered
+# options, "Switch automatically" first and "Stay on <model>" second, each with a line under it. It
+# takes the message box's place, and nothing in the transcript says it is open.
+SAFEGUARD = "safeguards flagged this session"
+STAY = "Stay on"
+
+
+def safeguard_dialog(screen):
+    """The safeguards' model-switch question on screen, or None."""
+    lines = without_side_panel(screen).splitlines()
+    at = max((i for i, line in enumerate(lines) if SAFEGUARD in line), default=None)
+    if at is None:
+        return None
+    options, body = [], []
+    for line in lines[at:]:
+        if m := OPTION_RE.match(line):
+            options.append((bool(m[1]), m[2]))
+        elif not options and line.strip():
+            body.append(line.strip().removeprefix("│").strip())
+    if not any(label.startswith(STAY) for _, label in options):
+        return None
+    return Dialog(" ".join(body), tuple(options), None)
 
 
 # Claude Code's message box sits between the screen's last two full-width rules, its first line

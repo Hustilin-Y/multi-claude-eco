@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from multiclaude import addons, bot, telegram
 from multiclaude.channels import TelegramChat
 from multiclaude.log import log
-from multiclaude.router import approvals, switching
+from multiclaude.router import approvals, safeguards, switching
 from multiclaude.router.session import DialogOpen
 
 DELIVER_TIMEOUT = 120  # how long work waits for a (re)starting assistant
@@ -441,7 +441,8 @@ class Worker:
         if (self.watches_approvals and (session.turn.busy or session.turn.stalled or session.approval or session.queue)
                 and (session.approval and session.approval.answer or now - self.last_check >= approvals.CHECK_EVERY)):
             self.last_check = now
-            approvals.check(session)
+            if not safeguards.check(session):
+                approvals.check(session)
         if session.queue and not session.approval:
             if session.asleep():
                 wake(session)

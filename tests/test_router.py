@@ -2174,6 +2174,60 @@ def test_approving_presses_yes_in_the_dialog(r, desk, dialog_on_screen):
     assert alice.approval is None
 
 
+# --- the safeguards' model-switch question ---------------------------------------------------------
+
+def test_the_safeguards_question_is_read_off_the_screen(r):
+    dialog = r.claude_ui.safeguard_dialog(captured("safeguard-dialog.txt"))
+
+    assert dialog.find("Stay on") == 1 and dialog.cursor == 0 and dialog.deny_in is None
+    assert dialog.text.startswith("Opus 5.5's safeguards flagged this session.") and "Model switch" not in dialog.text
+    assert [label for _, label in dialog.options] == ["Switch automatically", "Stay on Opus 5.5", "Type something.",
+                                                      "Chat about this"]
+    assert r.claude_ui.approval_dialog(captured("safeguard-dialog.txt")) is None
+    for name in ("approval-dialog.txt", "message-put-back.txt", "message-box-empty.txt"):
+        assert r.claude_ui.safeguard_dialog(captured(name)) is None
+
+
+@pytest.fixture
+def flagged(r, desk, monkeypatch):
+    """Alice's assistant stopped by the safeguards, the question on its screen. Down moves its cursor to
+    Stay, Enter closes it and puts the stopped message back in the box, Escape empties the box."""
+    alice = desk.users["alice"]
+
+    def screen():
+        keys = [args[-1] for args, _ in r.keystrokes]
+        if "Escape" in keys:
+            return captured("message-box-empty.txt")
+        if "Enter" in keys:
+            return captured("message-put-back.txt")
+        text = captured("safeguard-dialog.txt")
+        if "Down" in keys:
+            text = text.replace("❯ 1. Switch", "  1. Switch").replace("  2. Stay on", "❯ 2. Stay on")
+        return text
+
+    monkeypatch.setattr(alice.pane, "screen", screen)
+    monkeypatch.setattr(r.session, "SCREEN_POLL", 0.01, raising=False)
+    alice.turn.busy = True
+    return SimpleNamespace(alice=alice, worker=r.work.Worker(alice))
+
+
+def test_the_safeguards_question_is_answered_stay_the_turn_ended_and_the_person_told(r, desk, flagged):
+    alice = flagged.alice
+
+    flagged.worker.step(time.time())
+
+    keys = [args[-1] for args, _ in r.keystrokes]
+    assert keys[:2] == ["Down", "Enter"] and "1" not in keys and "Escape" in keys
+    assert not alice.turn.busy
+    texts = [shown(p) for m, p in r.api_calls if m == "sendRichMessage" and p["chat_id"] == ALICE_CHAT]
+    assert any("safeguards stopped the answer to the last message" in t for t in texts)
+    assert not any(p.get("reply_markup") for m, p in r.api_calls if m == "sendRichMessage")  # no question relayed
+
+
+def test_without_the_question_nothing_is_pressed(r, desk, dialog_on_screen):
+    assert r.work.safeguards.check(dialog_on_screen.alice) is False and r.keystrokes == []
+
+
 def test_denying_moves_to_no_first(r, desk, dialog_on_screen):
     alice, worker = dialog_on_screen.alice, dialog_on_screen.worker
     worker.step(time.time())

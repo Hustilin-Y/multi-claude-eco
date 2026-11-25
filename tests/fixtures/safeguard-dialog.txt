@@ -1,0 +1,28 @@
+● Here is the summary you asked for. The report covers the last three weeks.
+
+✻ Worked for 19s · done 11:37 AM
+
+❯ [Telegram from Alice]
+  Please summarise the attached notes and list the open questions.
+
+● Opus 5.5's safeguards stopped the response above · continuing once with that noted
+
+✻ Waiting for API response · will retry in 0s · check your network
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☐ Model switch
+
+│ Opus 5.5's safeguards flagged this session. You may be seeing this for the first time: Opus 5.5 is more capable and has stronger safeguards as a result, which
+│ can sometimes flag non-cybersecurity work. We're improving these safeguards to reduce the amount of incorrectly flagged messages. Switch to Opus 4.8 and keep
+│ going whenever this happens? You can change this later in /config.
+
+❯ 1. Switch automatically
+     Continue on Opus 4.8 now, and switch without asking from now on
+  2. Stay on Opus 5.5
+     Stop here without switching, and ask me each time a message is flagged
+  3. Type something.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── work ─
