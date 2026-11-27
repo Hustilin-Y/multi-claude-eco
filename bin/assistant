@@ -96,6 +96,12 @@ check_programs() {
 # transcripts that --continue and the router read.
 install_managed_settings() {
   local file=/etc/claude-code/managed-settings.json
+  # Already set (the usual case after the first install): no sudo, so the bot's user can run
+  # `assistant install` and `addon enable` without root once the machine has a separate admin.
+  if [ -r "$file" ] && jq -e '.cleanupPeriodDays == 99999 and .skipDangerousModePermissionPrompt == true
+                              and .channelsEnabled == true' "$file" >/dev/null 2>&1; then
+    return 0
+  fi
   sudo mkdir -p "${file%/*}"
   { sudo cat "$file" 2>/dev/null || echo '{}'; } |
     jq '. + {cleanupPeriodDays: 99999, skipDangerousModePermissionPrompt: true, channelsEnabled: true}' |
