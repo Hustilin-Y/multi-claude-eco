@@ -90,6 +90,7 @@ class Session:
             if on_entry:
                 on_entry(entry)
             self.turn.handle(entry)
+        self.turn.settle(now)
         if self.approval:
             self.turn.postpone_stuck(now)  # it waits for the person's tap, not stuck
         if self.turn.stuck(now, self.tail.latest_subagent_write):

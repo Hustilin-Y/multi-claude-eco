@@ -9,7 +9,7 @@ BACKUP_PASSWORD="$ROOT/state/backup-password"
 BACKUP_STATE="$ROOT/state/backup"  # the crontab's copy, when the last backup worked, restic's errors, the lock
 
 BACKUP_COMMAND="$ROOT/bin/assistant backup"
-BACKUP_CRON_COMMENT="# assistant: backup of the bot and everyone's files, every night at 02:30 UTC"
+BACKUP_CRON_PURPOSE="backup of the bot and everyone's files, every night at 02:30 UTC"
 BACKUP_CRON_LINE="30 2 * * * $BACKUP_COMMAND >> $ROOT/logs/backup.log 2>&1"
 
 # Credentials a repository needs (AWS_ACCESS_KEY_ID for S3, say) may be in the bot's .env.

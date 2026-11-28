@@ -156,6 +156,7 @@ class Desk:
         self.panel.tick(now)
         self.reset_desk(now)
         self.upgrader.tick(now, [self.desk, *self.users.values()], self.users.get(self.owner))
+        addons.call("on_tick", self, now)
         self.poller.tick(now, self.users.get(self.owner), self.background)
 
     def tend(self, user, now):
@@ -366,7 +367,8 @@ class Desk:
         if msg.via and not msg.reaction:
             telegram.ChatHistory(msg.chat).pass_on(msg.msg_id, to.name, msg.via.msg_id)  # what user sends next follows it
         if not any(addons.call("on_message", to, msg, now)):
-            to.queue_message(work.Deliver(now, *messages.typed(to.display, msg), msg.msg_id), now)
+            own = None if msg.via or msg.reaction else msg
+            to.queue_message(work.Deliver(now, *messages.typed(to.display, msg), msg.msg_id, sent=own), now)
         what = "reaction on message" if msg.reaction else "message"
         log(f"{to.name}: {what} {msg.msg_id}{'' if to is user else f' from {user.name}'} queued for delivery")
         # In the background, and so that a failing check can never cost the message itself.

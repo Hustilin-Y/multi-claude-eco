@@ -3,11 +3,11 @@ goes to the person whose "slack_id" in users.json sent it, and the router's answ
 their DM with the bot. Someone without a linked account is told so, and the owner gets their id."""
 import time
 
-from multiclaude import bot, jsonfile, telegram
+from multiclaude import bot, jsonfile, questions, telegram
 from multiclaude.addons.slack import api, messages
 from multiclaude.addons.slack.chat import SlackChat
 from multiclaude.log import log
-from multiclaude.router import asks, work
+from multiclaude.router import asks
 
 strangers = set()  # Slack ids the owner was told about, unlinked
 
@@ -88,7 +88,7 @@ def answer_tap(user, tap, now):
     if ask.get("answer") is not None:
         log(f"{user.name}: question {ts} was already answered; ignoring a tap on {tap.text!r}")
         return
-    if ask.get("kind") == work.CANCEL_CLEAR:
+    if ask.get("kind") == questions.CANCEL_CLEAR:
         asks.clear_cancel_tapped(user, user.reply_to, path, ask, ts)
         return
     options = ask.get("options") or []

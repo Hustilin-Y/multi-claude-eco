@@ -7,7 +7,12 @@ import time
 from multiclaude import jsonfile
 
 KEPT_FOR = 30 * 86400
-CHECKLIST = "checklist"  # the kind of a kept `tg checklist`
+# The kinds the core answers itself (router/asks.py). A tap on any other kind goes to the add-ins and
+# never to an assistant, so a kind the core starts keeping must be listed in CORE_KINDS.
+CHECKLIST = "checklist"        # a kept `tg checklist`
+CANCEL_CLEAR = "cancel-clear"  # the Cancel under a waiting /clear (router/work.py)
+APPROVAL = "approval"          # an approval dialog relayed to the person (router/approvals.py)
+CORE_KINDS = (CHECKLIST, CANCEL_CLEAR, APPROVAL)
 UNTICKED, TICKED = "☐", "✅"
 
 

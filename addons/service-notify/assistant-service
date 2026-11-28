@@ -1,0 +1,46 @@
+#!/usr/bin/env python3
+# assistant service key|revoke|list [<service>]: tokens for local services that message the owner
+"""Tokens for local services (the service-notify add-in, see multiclaude.addons.service_notify),
+which let a program on this machine message the owner through the bot and hear their button
+presses. bin/assistant runs this while the add-in is on.
+
+  assistant service key <service>              make a token for a service that has none, and print it
+  assistant service key <service> --replace    a new token in place of its old one, which stops working
+  assistant service revoke <service>           forget that service's token
+  assistant service list                       the services that have a token
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "lib"))
+
+from multiclaude.addons.service_notify import store  # noqa: E402
+
+
+def main(args):
+    if args == ["list"]:
+        for name in store.names():
+            print(name)
+        return 0
+    replace = args[2:] == ["--replace"]
+    if args[:1] not in (["key"], ["revoke"]) or len(args) != 2 + (replace and args[0] == "key"):
+        print(__doc__.split("\n\n", 1)[1].rstrip())
+        return 2
+    command, name = args[:2]
+    try:
+        if command == "key":
+            print(store.replace_key(name) if replace else store.new_key(name))
+            return 0
+        revoked = store.revoke(store.checked(name))
+    except ValueError as e:
+        print(f"service: {e}", file=sys.stderr)
+        return 1
+    if revoked:
+        print(f"{name}'s token is revoked")
+    else:
+        print(f"{name} had no token")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

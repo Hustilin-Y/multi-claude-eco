@@ -2,6 +2,7 @@
 side is tested in relay/test/panel.test.js, how the page words things in relay/test/format.test.js and
 its sparklines in relay/test/sparkline.test.js."""
 import json
+import subprocess
 import time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -447,6 +448,56 @@ def test_someone_elses_job_cant_be_paused(r, panel):
     tap(panel, "job", command="pause", id=theirs.id)
     assert r.crontab == [CRONTAB]
     assert last_snapshot(r)["answer"] == {"id": "t-job", "ok": False, "text": "That job isn't in the crontab any more."}
+
+
+def test_each_edit_keeps_the_crontab_as_it_was(r, panel):
+    tap(panel, "job", command="pause", id=r.cronjobs.jobs("alice", CRONTAB)[0].id)
+
+    assert [copy.read_text() for copy in r.cronjobs.CRONTAB_COPIES.glob("*.txt")] == [CRONTAB]
+
+
+def test_an_edit_that_would_touch_someone_elses_lines_is_refused(r, panel):
+    with pytest.raises(r.cronjobs.CrontabError):
+        r.cronjobs.edit("alice", lambda lines: [])
+    assert r.crontab == [CRONTAB]
+
+
+def test_a_job_is_added_at_the_end_under_its_comment(r, panel):
+    r.cronjobs.add_job("alice", "dentist Fri 09:00 Helsinki, one-off (alice-dentist)", ["0 7 20 11 * x"])
+
+    assert r.crontab[-1] == CRONTAB + "# alice: dentist Fri 09:00 Helsinki, one-off (alice-dentist)\n0 7 20 11 * x\n"
+
+
+@pytest.mark.parametrize("purpose, lines", [("", ["0 7 * * * x"]), ("two\nlines", ["0 7 * * * x"]), ("dentist", []),
+                                            ("dentist", [""]), ("dentist", ["# not a line"])])
+def test_a_job_must_be_one_purpose_and_cron_lines(r, panel, purpose, lines):
+    with pytest.raises(r.cronjobs.CrontabError):
+        r.cronjobs.add_job("alice", purpose, lines)
+    assert r.crontab == [CRONTAB]
+
+
+def test_removing_a_job_takes_its_comment_and_lines_and_only_one_job(r, panel):
+    with pytest.raises(r.cronjobs.CrontabError):
+        r.cronjobs.remove_job("alice", "assistant job")  # both of alice's jobs hold it
+    assert not r.cronjobs.remove_job("alice", "hers")  # bob's
+    assert r.crontab == [CRONTAB]
+
+    assert r.cronjobs.remove_job("alice", '"invoices"')
+    assert r.crontab[-1] == CRONTAB.split("# alice: invoice sync")[0]
+
+
+def test_no_edit_starts_from_a_crontab_that_cant_be_read(r, monkeypatch):
+    from multiclaude import cronjobs
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 1, "", "crontab: can't open your crontab file\n")
+    monkeypatch.setattr(cronjobs.subprocess, "run", run)
+
+    with pytest.raises(cronjobs.CrontabError):
+        cronjobs.add_job("alice", "dentist", ["0 7 20 11 * x"])
+    assert calls == [["crontab", "-l"]]
 
 
 def test_deleting_a_job_is_asked_of_the_assistant(r, desk, panel):

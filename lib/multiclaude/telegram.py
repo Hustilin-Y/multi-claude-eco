@@ -22,6 +22,7 @@ from multiclaude.log import log
 
 API_BASE = os.environ.get("TG_API_BASE") or "https://api.telegram.org"  # the tests point this at a fake Bot API
 RICH_LIMIT = 32000        # Telegram allows 32768 characters per rich message
+UPLOAD_TIMEOUT = 120      # for pictures to upload and Telegram to answer, as `tg` waits
 # On some networks new IPv6 connections to the Bot API get no answer for seconds while IPv4
 # connects at once, and Python waits on one address at a time. So connections are kept open
 # between calls, and a new one tries IPv4 first and races a fresh attempt every CONNECT_STAGGER
@@ -503,6 +504,12 @@ def flush_held():
 def bot():
     """This process's BotApi for the router: short timeouts, so a slow call never stalls it."""
     return BotApi(timeout=10)
+
+
+@functools.cache
+def uploading_bot():
+    """A BotApi for uploads off the router's loop, which take longer than bot() waits."""
+    return BotApi(timeout=UPLOAD_TIMEOUT)
 
 
 def api(method, **params):

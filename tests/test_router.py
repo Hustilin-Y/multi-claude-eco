@@ -194,6 +194,33 @@ def test_session_stays_busy_while_messages_are_queued(r, tmp_path):
     assert turn.busy
 
 
+def turn_ended_with_one_item_counted_as_queued(r, tmp_path):
+    from multiclaude.router.turn import QUEUED_TURN_GRACE
+    s = session(r, tmp_path)
+    s.turn.handle({"type": "queue-operation", "operation": "enqueue"})
+    s.turn.handle({"type": "system", "subtype": "turn_duration"})
+    s.turn.last_write = time.time() - QUEUED_TURN_GRACE - 1
+    return s
+
+
+def test_a_turn_ends_when_no_turn_starts_for_what_was_counted_as_queued(r, tmp_path):
+    s = turn_ended_with_one_item_counted_as_queued(r, tmp_path)
+
+    s.read(time.time())
+
+    assert (s.turn.busy, s.turn.pending, s.turn.notice) == (False, 0, None)
+
+
+def test_a_queued_message_that_starts_its_turn_keeps_the_session_busy(r, tmp_path):
+    s = turn_ended_with_one_item_counted_as_queued(r, tmp_path)
+    s.turn.handle({"type": "queue-operation", "operation": "dequeue"})
+    s.turn.handle({"type": "user", "message": {"content": "the queued message"}})
+
+    s.turn.settle(time.time())
+
+    assert s.turn.busy
+
+
 @pytest.mark.parametrize("content", ["[Request interrupted by user]",
                                      [{"type": "text", "text": "[Request interrupted by user for tool use]"}]])
 def test_escape_ends_the_turn(r, tmp_path, content):
@@ -589,6 +616,51 @@ def test_a_second_tap_on_an_answered_question_is_ignored(r, desk):
     assert desk.users["alice"].queue == []
 
 
+def test_a_tap_on_a_question_of_a_kind_nobody_takes_never_reaches_the_assistant(r, desk):
+    path = r.paths.ASKS / ALICE_CHAT / "42.json"
+    write_json(path, {"question": "Print plate 1?", "options": ["Print", "Cancel"], "kind": "service"})
+
+    desk.inbound(channel("Print", msg_id="42", callback_id="cb1", callback_data="ask:0"))
+
+    assert desk.users["alice"].queue == []
+    assert ("editMessageReplyMarkup", {"chat_id": ALICE_CHAT, "message_id": "42"}) in r.api_calls
+    assert "answer" not in read_json(path)
+
+
+def test_a_tap_on_a_kept_question_that_cant_be_read_never_reaches_the_assistant(r, desk):
+    path = r.paths.ASKS / ALICE_CHAT / "42.json"
+    path.parent.mkdir(parents=True)
+    path.write_text('{"question": "Print plate 1?", "kind": "serv')  # cut off mid-write
+
+    desk.inbound(channel("Print", msg_id="42", callback_id="cb1", callback_data="ask:0"))
+
+    assert desk.users["alice"].queue == []
+    assert ("editMessageReplyMarkup", {"chat_id": ALICE_CHAT, "message_id": "42"}) in r.api_calls
+
+
+@pytest.mark.parametrize("kind", ["checklist", "cancel-clear", "approval"])
+def test_taps_on_the_cores_own_kinds_never_go_to_the_add_ins(r, desk, monkeypatch, kind):
+    write_json(r.paths.ASKS / ALICE_CHAT / "42.json", {"question": "Q", "options": ["A"], "kind": kind})
+    hooks = []
+    monkeypatch.setattr(r.asks.addons, "call", lambda hook, *a: hooks.append(hook) or [])
+
+    desk.inbound(channel("A", msg_id="42", callback_id="cb1", callback_data="ask:0"))
+
+    assert kind in r.asks.questions.CORE_KINDS and "question_tapped" not in hooks
+
+
+def test_an_add_in_that_takes_a_tap_gets_it_and_the_core_does_nothing_more(r, desk, monkeypatch):
+    write_json(r.paths.ASKS / ALICE_CHAT / "42.json", {"question": "Q", "options": ["A"], "kind": "service"})
+    taken = []
+    monkeypatch.setattr(r.asks.addons, "call",
+                        lambda hook, *a: taken.append((hook, a[1].text, a[3]["kind"])) or [True])
+
+    desk.inbound(channel("A", msg_id="42", callback_id="cb1", callback_data="ask:0"))
+
+    assert taken == [("question_tapped", "A", "service")]
+    assert r.api_calls == [] and desk.users["alice"].queue == []
+
+
 # --- answers to another person's assistant ----------------------------------------------------
 
 FOOTER = "*✉️ From Alice's Claude · your answer goes to it*"
@@ -785,6 +857,52 @@ def test_serve_delivers_messages_in_order(r, desk, monkeypatch):
     assert alice.queue == [] and alice.turn.busy
 
 
+def test_a_message_waits_a_moment_for_the_ones_sent_with_it(r, desk, monkeypatch):
+    alice = desk.users["alice"]
+    typed = []
+    monkeypatch.setattr(alice, "ready", lambda: True)
+    monkeypatch.setattr(alice, "type_message", lambda header, body: typed.append(header))
+    desk.inbound(channel("Check out", msg_id="10"))
+
+    r.work.serve(alice, time.time())
+
+    assert typed == [] and len(alice.queue) == 1
+
+
+def test_messages_sent_together_are_typed_in_as_one(r, desk, monkeypatch):
+    # A comment and the forward it went with were typed in 0.5 s apart, and the assistant answered the comment alone (28 Nov 2026).
+    alice = desk.users["alice"]
+    typed = []
+    monkeypatch.setattr(alice, "ready", lambda: True)
+    monkeypatch.setattr(alice, "type_message", lambda header, body: typed.append((header, body)))
+    desk.inbound(channel("Check out", msg_id="10"))
+    desk.inbound(channel("https://example.com/pull/6", msg_id="11"))
+
+    r.work.serve(alice, time.time() + r.work.GATHER)
+
+    assert typed == [("[Telegram from Alice · msgs 10, 11 · 2026-10-08 18:53 UTC] My messages are pasted below, "
+                      "in the order I sent them; together they are my own request to you:",
+                      "msg 10:\nCheck out\n\nmsg 11:\nhttps://example.com/pull/6")]
+    assert alice.queue == [] and alice.turn.busy
+
+
+def test_reactions_and_router_notes_go_in_on_their_own(r, desk, monkeypatch):
+    alice = desk.users["alice"]
+    typed = []
+    monkeypatch.setattr(alice, "ready", lambda: True)
+    monkeypatch.setattr(alice, "type_message", lambda header, body: typed.append(header))
+    desk.inbound(channel("hello", msg_id="10"))
+    desk.inbound(channel("👍", msg_id="10", reaction="👍"))
+    alice.queue_message(r.work.Deliver(time.time(), "[Router · a note]"), time.time())
+    desk.inbound(channel("and this", msg_id="11"))
+
+    r.work.serve(alice, time.time() + r.work.GATHER)
+
+    assert [header.split("]")[0] for header in typed] == [
+        "[Telegram from Alice · msg 10 · 2026-10-08 18:53 UTC", "[Telegram from Alice · reaction on msg 10 · 2026-10-08 18:53 UTC",
+        "[Router · a note", "[Telegram from Alice · msg 11 · 2026-10-08 18:53 UTC"]
+
+
 def test_serve_holds_a_switch_until_the_turn_ends(r, desk, monkeypatch):
     alice = desk.users["alice"]
     monkeypatch.setattr(alice, "ready", lambda: True)
@@ -794,6 +912,34 @@ def test_serve_holds_a_switch_until_the_turn_ends(r, desk, monkeypatch):
     r.work.serve(alice, 50.0)
 
     assert len(alice.queue) == 1 and alice.queue[0].since == 50.0
+
+
+def test_work_waiting_for_idle_goes_ahead_of_a_message_queued_behind_it(r, desk, monkeypatch):
+    # The queued note marked the assistant busy, so a reconnect waited for it and it for the reconnect (18 Nov 2026).
+    alice = desk.users["alice"]
+    typed = []
+    monkeypatch.setattr(alice, "ready", lambda: True)
+    monkeypatch.setattr(alice, "run_command", lambda command: typed.append(command) or "Reconnected to srv")
+    monkeypatch.setattr(alice, "type_message", lambda header, body: typed.append(header))
+    alice.enqueue(r.work.SessionCommands(time.time(), commands=["/mcp reconnect srv"]))
+    alice.queue_message(deliver(r, "[Telegram from Alice]", "7"), time.time())
+
+    r.work.serve(alice, time.time())
+
+    assert typed[:2] == ["/mcp reconnect srv", "[Telegram from Alice]"]
+    assert alice.queue == [] and alice.turn.working
+
+
+def test_a_message_queued_during_a_turn_still_holds_work_waiting_for_idle(r, desk, monkeypatch):
+    alice = desk.users["alice"]
+    monkeypatch.setattr(alice, "ready", lambda: True)
+    alice.turn.delivered(time.time())
+    alice.enqueue(r.work.Switch(1.0, "model", "opus"))
+    alice.queue_message(deliver(r, "h", "8"), time.time())
+
+    r.work.serve(alice, time.time())
+
+    assert kinds(alice) == ["Switch", "Deliver"]
 
 
 def test_serve_clears_once_idle_and_keeps_messages_sent_after(r, desk, monkeypatch):
@@ -1963,7 +2109,7 @@ ESCAPE = (("send-keys", "-t", "=u-alice:", "Escape"), None)
 
 def busy(desk, name="alice"):
     user = desk.users[name]
-    user.turn.expect(time.time())
+    user.turn.delivered(time.time())
     return user
 
 
@@ -2163,7 +2309,7 @@ def test_cancel_drops_the_waiting_clear_and_lets_messages_through(r, desk, monke
 
     tap(desk, notice, "ask:0", "Cancel")
     tap(desk, notice, "ask:0", "Cancel")  # a second tap changes nothing
-    r.work.serve(alice, time.time())
+    r.work.serve(alice, time.time() + r.work.GATHER)
 
     edits = [p for m, p in r.api_calls if m == "editMessageText"]
     assert [e["rich_message"]["markdown"] for e in edits] == [r.asks.CLEAR_CANCELLED]
