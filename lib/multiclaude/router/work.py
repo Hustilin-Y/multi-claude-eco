@@ -7,7 +7,7 @@ import time
 import traceback
 from dataclasses import dataclass, field
 
-from multiclaude import addons, bot, telegram
+from multiclaude import addons, bot, questions, telegram
 from multiclaude.channels import TelegramChat
 from multiclaude.log import log
 from multiclaude.router import approvals, inbound, switching
@@ -22,7 +22,6 @@ DELETE_BATCH = 100     # deleteMessages takes up to 100 ids
 CLEAR_WAITS = ("🧹 I'll clear once I finish what I'm doing. Tap **Cancel** to keep everything, "
                "or send /stop to stop me and clear now.")
 CANCEL = "Cancel"
-CANCEL_CLEAR = "cancel-clear"  # the kind of question CLEAR_WAITS is (router/asks.py)
 CLEARED = "🧹 Context cleared. Starting fresh."
 RESTARTED = "🔄 Restarted with a new conversation. Starting fresh."
 FORCE_RELOAD = "/reload-plugins --force"  # what Claude Code asks for when a reload changes MCP tools
@@ -107,7 +106,7 @@ class Clear(Work):
         """Say once that it waits, with a Cancel button."""
         if not self.offered and user.reply_to:
             self.offered = True
-            self.notice = user.reply_to.ask(CLEAR_WAITS, [CANCEL], CANCEL_CLEAR)
+            self.notice = user.reply_to.ask(CLEAR_WAITS, [CANCEL], questions.CANCEL_CLEAR)
 
     def cancel(self):
         """Drop it unless it has started. Whether that was in time."""

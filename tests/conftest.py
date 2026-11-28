@@ -465,16 +465,24 @@ def r(tmp_path, monkeypatch):
     r = SimpleNamespace(paths=paths, telegram=telegram, tmux=tmux, about=about, asks=asks, claude_ui=claude_ui, desk=desk,
                         messages=inbound, limits=limits, plugins=plugins, poller=poller, recovery=recovery, session=session,
                         switching=switching, upgrade=upgrade, usage=usage, work=work,
-                        api_calls=[], keystrokes=[], unreachable=False)
+                        api_calls=[], keystrokes=[], unreachable=False, results={}, uploads=[])
 
     class RecordingBot:
-        """The router's BotApi: records each call; with r.unreachable set, Telegram can't be reached."""
+        """The router's BotApi: records each call (and the files it uploads, read as it's made, in
+        r.uploads); with r.unreachable set, Telegram can't be reached; r.results[method] adds to
+        what a send answers, or is what anything else answers, or an exception it raises."""
 
         def call(self, method, files=None, **params):
             if r.unreachable:
                 raise telegram.Unreachable(f"{method}: no network")
             r.api_calls.append((method, params))
-            return {"message_id": 900 + len(r.api_calls)} if method.startswith("send") else True
+            r.uploads.append({field: Path(path).read_bytes() for field, path in (files or {}).items()})
+            result = r.results.get(method)
+            if isinstance(result, Exception):
+                raise result
+            if method.startswith("send"):
+                return {"message_id": 900 + len(r.api_calls), **(result or {})}
+            return True if result is None else result
 
     def run_tmux(*args, stdin=None):
         r.keystrokes.append((args, stdin))
@@ -483,6 +491,7 @@ def r(tmp_path, monkeypatch):
 
     bot = RecordingBot()
     monkeypatch.setattr(telegram, "bot", lambda: bot)
+    monkeypatch.setattr(telegram, "uploading_bot", lambda: bot)
     monkeypatch.setattr(telegram, "later", lambda fn, *a, **k: fn(*a, **k))
     monkeypatch.setattr(desk, "in_background", lambda fn, *a: fn(*a))
     monkeypatch.setattr(work.Worker, "start", lambda self: None)  # tests drive the queues themselves

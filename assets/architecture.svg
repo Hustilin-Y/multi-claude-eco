@@ -202,7 +202,7 @@
   <path class="out" d="M1305,610 V210 H1328" marker-end="url(#out)"/>
   <g class="step"><circle cx="1320" cy="300" r="9"/><text x="1320" y="304">5</text></g>
   <text class="label" x="1334" y="304">the reply</text>
-  <text class="label" x="1314" y="614">a job's result</text>
+  <text class="label" x="1314" y="566">a job's result</text>
 
   <path class="out" d="M1395,160 V100 H480 V158" marker-end="url(#out)"/>
   <g class="step"><circle cx="760" cy="100" r="9"/><text x="760" y="104">6</text></g>
@@ -234,6 +234,18 @@
   <text class="label middle faint" x="820" y="826">slack sends replies to Slack DMs through Slack's servers</text>
 
   <path class="tie" d="M1165,260 V290"/>
+
+  <!-- The service-notify add-in: local programs message the owner through the router's API -->
+  <g class="box">
+    <rect class="addin" x="1330" y="575" width="130" height="95" rx="10"/>
+    <text class="tag" x="1395" y="593">ADD-IN</text>
+    <text class="name" x="1395" y="613">Services</text>
+    <text x="1395" y="631">local programs:</text>
+    <text x="1395" y="647">messages, and</text>
+    <text x="1395" y="663">button presses</text>
+  </g>
+  <path class="opt" d="M1395,672 V686 H820 V622" marker-start="url(#opt)" marker-end="url(#opt)"/>
+  <text class="label middle" x="1000" y="681">an API on 127.0.0.1</text>
 
   <!-- A browser take-over: the person's phone, the quick tunnel, takeover and the assistant's browser -->
   <g class="box">

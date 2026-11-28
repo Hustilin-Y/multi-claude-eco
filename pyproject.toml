@@ -5,7 +5,8 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 130
 include = ["bin/*.py", "bin/tg", "bin/takeover", "bin/patch-telegram-plugin", "lib/**/*.py", "addons/*/*.py",
-           "addons/slack/slack", "addons/siri/assistant-voice", "addons/reminders/assistant-reminders", "tests/*.py",
+           "addons/slack/slack", "addons/siri/assistant-voice", "addons/reminders/assistant-reminders",
+           "addons/service-notify/assistant-service", "addons/service-notify/teardown", "addons/*/client/*.py", "tests/*.py",
            "tests/addons/*.py"]
 
 [tool.ruff.lint]

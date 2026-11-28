@@ -156,6 +156,7 @@ class Desk:
         self.panel.tick(now)
         self.reset_desk(now)
         self.upgrader.tick(now, [self.desk, *self.users.values()], self.users.get(self.owner))
+        addons.call("on_tick", self, now)
         self.poller.tick(now, self.users.get(self.owner), self.background)
 
     def tend(self, user, now):
