@@ -3,6 +3,7 @@ import json
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime
 
 from multiclaude import bot
 from multiclaude.log import log
@@ -16,6 +17,11 @@ ERROR_TEXT_MAX = 300
 # Claude Code's kinds of API error that trying again unchanged won't fix: a login, billing or
 # plan limit problem, or a request the API refuses.
 LASTING_ERRORS = {"authentication_failed", "billing_error", "invalid_request", "rate_limit"}
+# The tools that schedule something inside Claude Code (CronCreate, and /loop's own wake-ups),
+# which only that claude process carries out.
+SCHEDULING_TOOLS = ("CronCreate", "ScheduleWakeup")
+# Calls to them from code, as Code Mode makes them inside its REPL tool (tools.CronCreate({...})).
+SCHEDULING_CALL_RE = re.compile(rf"\b(?:{'|'.join(SCHEDULING_TOOLS)})\s*\(")
 
 
 @dataclass
@@ -37,6 +43,14 @@ def interrupted(entry):
     content = (entry.get("message") or {}).get("content")
     blocks = content if isinstance(content, list) else [{"text": content}]
     return any(isinstance(b, dict) and str(b.get("text") or "").startswith(INTERRUPTED_MARKER) for b in blocks)
+
+
+def written_at(entry):
+    """When Claude Code wrote an entry (its "timestamp"); now when it doesn't say."""
+    try:
+        return datetime.fromisoformat(str(entry.get("timestamp")).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return time.time()
 
 
 def turn_event(entry):
@@ -72,6 +86,7 @@ class Turn:
         self.model = None        # the model of its latest reply (the model-fallback add-in reads it)
         self.stalled = False     # judged stuck, and nothing written since: a dialog may still open
         self.ended_with_queue = False  # its turn ended while items still counted as queued
+        self.scheduled = 0.0     # when it last scheduled something inside Claude Code (SCHEDULING_TOOLS)
 
     def end(self):
         self.busy = self.in_turn = self.only_queued = False
@@ -137,9 +152,13 @@ class Turn:
         if model.startswith("claude-"):  # not Claude Code's own "<synthetic>" notes
             self.model = model
         for block in content:
-            if (isinstance(block, dict) and block.get("type") == "tool_use"
-                    and REPLY_RE.search(json.dumps(block.get("input") or {}))):
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                continue
+            tool_input = json.dumps(block.get("input") or {})
+            if REPLY_RE.search(tool_input):
                 self.last_reply = time.time()
+            if block.get("name") in SCHEDULING_TOOLS or SCHEDULING_CALL_RE.search(tool_input):
+                self.scheduled = written_at(entry)
 
     def settle(self, now):
         """End a turn whose queued items never started one: the count was off, as Code Mode's
