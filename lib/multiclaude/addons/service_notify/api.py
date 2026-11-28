@@ -30,6 +30,7 @@ from multiclaude.log import log
 DEFAULT_PORT = 8790
 LOOPBACK = ("127.0.0.1", "::1")
 MAX_BODY = 20 * 2**20
+PRESS_FIELDS = ("seq", "message_id", "button_id", "label", "by", "at", "via")  # what a service gets of a press
 MAX_WAIT = 25
 MAX_POLLS = 4
 MAX_CONNECTIONS = 16  # open at once, from every service
@@ -223,8 +224,7 @@ def handler_for(listener):
                         _polls[service] -= 1
                 if self.peer_gone():  # its service restarted meanwhile: the presses wait for the next poll
                     return []
-            return [{k: p.get(k) for k in ("seq", "message_id", "button_id", "label", "by", "at")}
-                    for p in kept.take_presses(time.time())]
+            return [{k: p.get(k) for k in PRESS_FIELDS} for p in kept.take_presses(time.time())]
 
         def peer_gone(self):
             """Whether the caller hung up: its end of the connection reads as closed."""

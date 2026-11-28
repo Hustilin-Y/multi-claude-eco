@@ -56,35 +56,60 @@ def take_tap(user, tap, now):
 
 def press_for(user, tap, chat, msg_id, now):
     """The service a press was queued for, or None when the tap did nothing."""
-    kept = messages.read_kept(chat, msg_id)  # afresh, under the lock
-    if not kept:
-        log(f"{user.name}: tap on service message {msg_id}, which isn't kept any more; ignored")
-        return None
-    service = kept.get("service")
-    buttons = [b for row in kept.get("buttons") or [] for b in row]
     data = tap.attrs.get("callback_data") or ""
     n = int(data[4:]) if data.startswith("ask:") and data[4:].isdigit() else -1
+    reason, service = queue_press(user, chat, msg_id, n, now, "telegram")
+    return service if reason is None else None
+
+
+def press_from_app(user, service, message_id, index, now):
+    """A press on button index of service's message message_id, made in the Mini App by user (a router
+    add-in calls this for the person whose page asked, never for anyone else). The same checks as a
+    tap, under the message's lock, and the Telegram message shows it. None when queued, else why not:
+    "unknown", "other_service", "no_button", "answered" or "expired". The button ids stay here."""
+    chat, msg_id = str(user.chat_id), int(message_id)
+    with messages.MESSAGE_LOCKS[(chat, msg_id)]:
+        reason, _ = queue_press(user, chat, msg_id, int(index), now, "miniapp", service)
+    if reason is None:
+        log(f"{user.name}: a press from the Mini App on {service}'s message {msg_id} queued for it")
+        notify(service)
+    return reason
+
+
+def queue_press(user, chat, msg_id, n, now, via, expected=None):
+    """(None, service) when button n of the kept message was queued as a press, else (why not, service).
+    Under the message's lock. expected, when given, is the only service whose message may be pressed."""
+    kept = messages.read_kept(chat, msg_id)  # afresh, under the lock
+    if not kept or kept.get("kind") != messages.KIND:
+        log(f"{user.name}: press on service message {msg_id}, which isn't kept any more; ignored")
+        return "unknown", None
+    service = kept.get("service")
+    if expected is not None and service != expected:
+        log(f"{user.name}: {expected} asked to press {service}'s message {msg_id}; refused")
+        return "other_service", service
+    buttons = [b for row in kept.get("buttons") or [] for b in row]
     if not 0 <= n < len(buttons):
-        log(f"{user.name}: tap {data!r} on {service}'s message {msg_id} matches no button; ignored")
-        return None
+        log(f"{user.name}: press {n} on {service}'s message {msg_id} matches no button; ignored")
+        return "no_button", service
     once = kept.get("once", True)
     if kept.get("answer") is not None and (once or kept.get("answer") == "expired"):
-        log(f"{user.name}: {service}'s message {msg_id} was already answered; a tap ignored")
-        return None
+        log(f"{user.name}: {service}'s message {msg_id} was already answered; a press ignored")
+        return ("expired" if kept.get("answer") == "expired" else "answered"), service
     if now > kept.get("expires", 0):
-        log(f"{user.name}: tap on {service}'s message {msg_id} after it expired")
+        log(f"{user.name}: press on {service}'s message {msg_id} after it expired")
         expire(chat, msg_id, kept)
-        return None
+        return "expired", service
     button = buttons[n]
     store.Service(service).add_press({"chat": chat, "message_id": msg_id, "button_id": button["id"],
-                                      "label": button["text"], "by": user.name, "at": now}, now)
+                                      "label": button["text"], "by": user.name, "at": now, "via": via}, now)
     if once:
         mark(chat, msg_id, kept, n)
+        shown = pending(button["text"]) + (" (Mini App)" if via == "miniapp" else "")
         try:
-            messages.take_buttons_off(chat, msg_id, pending(button["text"]))
+            messages.take_buttons_off(chat, msg_id, shown)
         except messages.Refused as e:  # it stays live: the sweep takes them off by its expiry
             log(f"{user.name}: can't show the press on {service}'s message {msg_id}: {e}")
-    return service
+    return None, service
 
 
 def expire(chat, msg_id, kept):

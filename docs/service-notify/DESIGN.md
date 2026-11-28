@@ -105,6 +105,13 @@ Errors are `{"error": code, "detail"?}`: 400 `bad_request`, 401 `unauthorized`, 
 - Every message with buttons expires (builder check, my call): `expires_in` defaults to 24 hours and is at most 7 days, for `once: false` buttons too. On `on_tick` the add-in takes the buttons off each message past its expiry ("⌛ Expired: nothing was done." added to its text), at most a few edits a second. The kept file in `state/asks/` lives 30 days, so a service button is never left on a message after its file is gone (a tap on an `ask:` button with no kept file is typed into the assistant, which is how `tg ask` works). If keeping the file fails after Telegram took the message, the add-in takes the buttons off at once and answers 500 `not_kept`. The add-in's `teardown` takes the buttons off every live service message, so turning it off leaves none.
 - Everything else a service does with a press (its own token's expiry, its own "already done") is the service's.
 
+### Presses from the Mini App (2026-11-28)
+
+- A router add-in may press a service's button for the person whose Mini App page asked: `taps.press_from_app(user, service, message_id, index, now)`. It runs the same checks as a Telegram tap, under the same message lock (the message is that service's and in that person's chat, the button exists, it isn't answered when `once`, it hasn't expired), queues the press, wakes the service's long-poll and edits the message to "⏳ <label>… (Mini App)". It answers None when queued, else `unknown`, `other_service`, `no_button`, `answered` or `expired`.
+- Every press carries `via`: `telegram` for a tap, `miniapp` for this. `GET /v1/presses` hands it over, so a service can log where a confirmation came from. To the service a press is a press: the same button, the same checks.
+- The button ids never leave the router: the page sees labels and positions only, which the add-in gets from its own service. The add-in checks the person may press (bambu-mcp: the owner only), and the relay has already checked the page's signature.
+- A tap after a press from the app, or the reverse, is the existing "already answered".
+
 ### Core changes
 
 1. A new hook, `question_tapped(user, tap, path, ask, now) -> bool`, called in `asks.answer` for a kept question whose `kind` the core doesn't know, before anything else is done with it. True means an add-in took it.
