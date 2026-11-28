@@ -4,9 +4,10 @@
 which let a program on this machine message the owner through the bot and hear their button
 presses. bin/assistant runs this while the add-in is on.
 
-  assistant service key <service>      make a new token for that service, replacing its old one, and print it
-  assistant service revoke <service>   forget that service's token
-  assistant service list               the services that have a token
+  assistant service key <service>              make a token for a service that has none, and print it
+  assistant service key <service> --replace    a new token in place of its old one, which stops working
+  assistant service revoke <service>           forget that service's token
+  assistant service list                       the services that have a token
 """
 import sys
 from pathlib import Path
@@ -21,16 +22,20 @@ def main(args):
         for name in store.names():
             print(name)
         return 0
-    if len(args) != 2 or args[0] not in ("key", "revoke"):
+    replace = args[2:] == ["--replace"]
+    if args[:1] not in (["key"], ["revoke"]) or len(args) != 2 + (replace and args[0] == "key"):
         print(__doc__.split("\n\n", 1)[1].rstrip())
         return 2
-    command, name = args
-    if not store.NAME_RE.fullmatch(name):
-        print(f"service: a service name is 1 to 32 of a-z, 0-9 and -, not {name!r}", file=sys.stderr)
+    command, name = args[:2]
+    try:
+        if command == "key":
+            print(store.replace_key(name) if replace else store.new_key(name))
+            return 0
+        revoked = store.revoke(store.checked(name))
+    except ValueError as e:
+        print(f"service: {e}", file=sys.stderr)
         return 1
-    if command == "key":
-        print(store.new_key(name))
-    elif store.revoke(name):
+    if revoked:
         print(f"{name}'s token is revoked")
     else:
         print(f"{name} had no token")

@@ -21,8 +21,8 @@ def main():
             kept = messages.read_kept(chat, msg_id)
             answered = kept is not None and kept.get("answer") is not None
             if kept and not answered:
+                taps.mark(chat, msg_id, kept, "expired")  # first: a tap the router reads from now on is ignored
                 store.Service(kept.get("service")).drop_presses_for(chat, msg_id)
-                taps.mark(chat, msg_id, kept, "expired")
             if answered:
                 messages.take_keyboard_off(chat, msg_id)
             else:

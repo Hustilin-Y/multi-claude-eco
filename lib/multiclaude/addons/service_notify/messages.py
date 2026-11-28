@@ -7,6 +7,7 @@ import binascii
 import re
 import tempfile
 import threading
+import time
 from collections import defaultdict
 from pathlib import Path
 
@@ -21,6 +22,7 @@ MAX_FILES = 10
 MAX_DEDUPE = 128
 DEFAULT_EXPIRES, MAX_EXPIRES = 86400, 7 * 86400
 PHOTO_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
+BUTTONS_WAIT = 5  # seconds Telegram may ask to wait before the buttons go on, waited for within the send
 # One lock per kept message (chat, message id): a tap, an edit and the expiry sweep take it.
 MESSAGE_LOCKS = defaultdict(threading.Lock)
 
@@ -28,9 +30,10 @@ MESSAGE_LOCKS = defaultdict(threading.Lock)
 class Refused(Exception):
     """What the API answers instead: an HTTP status, an error code and maybe a detail."""
 
-    def __init__(self, status, code, detail=None, retry_after=None):
+    def __init__(self, status, code, detail=None, retry_after=None, message_id=None):
         super().__init__(f"{status} {code}" + (f": {detail}" if detail else ""))
         self.status, self.code, self.detail, self.retry_after = status, code, detail, retry_after
+        self.message_id = message_id  # a message that went out all the same
 
 
 def bad(detail):
@@ -96,7 +99,7 @@ def check_files(files):
     decoded = []
     for f in files:
         name = f.get("name") if isinstance(f, dict) else None
-        if not isinstance(name, str) or not name or Path(name).name != name or name in (".", ".."):
+        if not isinstance(name, str) or not name.isprintable() or Path(name).name != name or name in ("", ".", ".."):
             raise bad("a file's name is a plain file name")
         try:
             data = base64.b64decode(f.get("data") or "", validate=True)
@@ -187,7 +190,7 @@ def shown(kept, note=None):
 def call(method, files=None, **params):
     """The Bot API, with its failures as what the service is answered."""
     try:
-        return telegram.bot().call(method, files=files, **params)
+        return (telegram.uploading_bot() if files else telegram.bot()).call(method, files=files, **params)
     except telegram.Unreachable:
         raise Refused(503, "telegram_unreachable") from None
     except telegram.TelegramError as e:
@@ -268,7 +271,8 @@ def send(service, request, now):
     with tempfile.TemporaryDirectory(prefix="service-notify-") as folder:
         uploads = {}
         for n, (name, data) in enumerate(files):
-            path = Path(folder) / f"{n}-{name}"
+            path = Path(folder) / str(n) / name  # a folder each, so Telegram gets the name as it was
+            path.parent.mkdir()
             path.write_bytes(data)
             uploads[f"file{n}"] = str(path)
         # Sent without its buttons: they go on only once the message is kept, so no button of a
@@ -291,18 +295,34 @@ def send(service, request, now):
         log(f"service {service}: can't keep message {msg_id}: {e!r}")
         if rows:
             raise Refused(500, "not_kept", f"message {msg_id} went out without its buttons") from None
-    if rows:
-        try:
-            call("editMessageReplyMarkup", chat_id=chat, message_id=msg_id, reply_markup=keyboard(rows))
-        except Refused as e:  # it stays live, so its buttons come off by its expiry if they went on after all
-            raise Refused(e.status, e.code, f"message {msg_id} went out, but its buttons may not have: "
-                                            f"{e.detail or e.code}", e.retry_after) from None
-    if dedupe:
+    if dedupe:  # before the buttons: a send tried again after they failed must not go out twice
         try:
             kept_for.dedupe_put(dedupe, msg_id, now)
         except Exception as e:
             log(f"service {service}: can't keep the dedupe key of message {msg_id}: {e!r}")
+    if rows:
+        put_buttons_on(chat, msg_id, rows)
     return {"message_id": msg_id}
+
+
+def put_buttons_on(chat, msg_id, rows):
+    """Put a sent message's buttons on, waiting once when Telegram asks for a few seconds. Refused
+    502 buttons_failed, with the message's id, when they can't be: it went out, so it mustn't be
+    sent again, and it stays live, so its buttons come off at its expiry if they went on after all."""
+    def put_on():
+        call("editMessageReplyMarkup", chat_id=chat, message_id=msg_id, reply_markup=keyboard(rows))
+
+    try:
+        try:
+            put_on()
+        except Refused as e:
+            if not (e.retry_after and e.retry_after <= BUTTONS_WAIT):
+                raise
+            time.sleep(e.retry_after)
+            put_on()
+    except Refused as e:
+        raise Refused(502, "buttons_failed", f"message {msg_id} went out, but its buttons may not have: "
+                                             f"{e.detail or e.code}", message_id=msg_id) from None
 
 
 def own_chat(service, msg_id):

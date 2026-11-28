@@ -13,12 +13,14 @@ into your service.
             svc.edit(press["message_id"], "✅ Printing plate 1")
 
 A connection that fails (the router restarting) is tried again, waiting 1, 2, 4… seconds; a 429
-waits as long as it says, once; anything else the API refuses raises ServiceError."""
+waits as long as it says, once; anything else the API refuses raises ServiceError. A send carries a
+dedupe key (its own when not given), so one tried again never shows twice."""
 import base64
 import json
 import time
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 
 UNCHANGED = object()
@@ -27,11 +29,13 @@ UNCHANGED = object()
 class ServiceError(Exception):
     """The API refused: status (HTTP), code ("bad_request", "unauthorized", "not_found",
     "recipient_not_allowed", "too_large", "rate_limited", "telegram_refused",
-    "telegram_unreachable", "not_kept"), detail and retry_after when it gave them."""
+    "telegram_unreachable", "not_kept", "buttons_failed"), detail and retry_after when it gave
+    them, and message_id for a message that went out all the same (buttons_failed)."""
 
-    def __init__(self, status, code, detail=None, retry_after=None):
+    def __init__(self, status, code, detail=None, retry_after=None, message_id=None):
         super().__init__(f"{status} {code}" + (f": {detail}" if detail else ""))
         self.status, self.code, self.detail, self.retry_after = status, code, detail, retry_after
+        self.message_id = message_id
 
 
 # The API is on this machine: never through an HTTP proxy from the environment, which would get
@@ -50,14 +54,15 @@ class Service:
         service; its message id. buttons: rows of (id, text) or {"id", "text"}; the id comes back
         in a press and never reaches Telegram. files: paths or (name, bytes); pictures show below
         the text. dedupe: a key; sending it again within 7 days sends nothing and gives the first
-        message's id. expires_in: seconds the buttons work (24 hours unless given, 7 days at most).
+        message's id; without one, the send gets its own. expires_in: seconds the buttons work (24
+        hours unless given, 7 days at most).
         once=False keeps the buttons on after a press."""
-        body = {"text": text, "silent": silent, "once": once}
+        body = {"text": text, "silent": silent, "once": once, "dedupe": dedupe or f"send:{uuid.uuid4().hex}"}
         if buttons is not None:
             body["buttons"] = rows_of(buttons)
         if files:
             body["files"] = [file_of(f) for f in files]
-        for key, value in (("to", to), ("dedupe", dedupe), ("expires_in", expires_in)):
+        for key, value in (("to", to), ("expires_in", expires_in)):
             if value is not None:
                 body[key] = value
         return self.call("POST", "/v1/messages", body)["message_id"]
@@ -122,7 +127,8 @@ def refusal(e):
         answer = json.loads(e.read())
     except ValueError:
         answer = {}
-    return ServiceError(e.code, answer.get("error", "http_error"), answer.get("detail"), answer.get("retry_after"))
+    return ServiceError(e.code, answer.get("error", "http_error"), answer.get("detail"), answer.get("retry_after"),
+                        answer.get("message_id"))
 
 
 def rows_of(buttons):

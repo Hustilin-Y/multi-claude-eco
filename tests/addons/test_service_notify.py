@@ -11,6 +11,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -277,6 +278,7 @@ def test_telegram_asking_to_slow_down_is_429_and_a_refusal_502(r, svc):
     {"text": "x", "files": [{"name": f"{n}.png", "data": "AA=="} for n in range(11)]},
     {"text": "x", "files": [{"name": "a.png", "data": "not base64!"}]},
     {"text": "x", "files": [{"name": "../a.png", "data": "AA=="}]},
+    {"text": "x", "files": [{"name": "a\r\nb.pdf", "data": "AA=="}]},
     {"text": "x", "expires_in": 0},
     {"text": "x", "expires_in": 604801},
     {"text": "x", "dedupe": "k" * 129},
@@ -320,9 +322,42 @@ def test_buttons_that_cant_be_put_on_stay_due_so_the_sweep_takes_them_off_later(
 
     error = refused(svc.messages.send, "printer", {"text": "Print?", "buttons": PRINT, "expires_in": 600}, 0)
 
-    assert (error.status, error.code) == (503, "telegram_unreachable") and "901" in error.detail
+    assert (error.status, error.code, error.message_id, error.retry_after) == (502, "buttons_failed", 901, None)
     assert svc.store.live_all() == [(ALICE_CHAT, 901)]  # Telegram may have put them on all the same
     assert kept(r, 901)["kind"] == "service"
+
+
+def test_a_send_tried_again_after_its_buttons_failed_goes_out_once(r, svc):
+    r.results["editMessageReplyMarkup"] = r.telegram.TelegramError("Too Many Requests", retry_after=30)
+    request = {"text": "Print?", "buttons": PRINT, "dedupe": "confirm:42"}
+
+    error = refused(svc.messages.send, "printer", request, 0)
+    again = svc.messages.send("printer", request, 1)
+
+    assert (error.code, error.retry_after, again) == ("buttons_failed", None, {"message_id": 901, "duplicate": True})
+    assert [m for m, _ in r.api_calls].count("sendRichMessage") == 1
+
+
+def test_buttons_go_on_after_the_few_seconds_telegram_asks_for(r, svc, monkeypatch):
+    r.results["editMessageReplyMarkup"] = r.telegram.TelegramError("Too Many Requests", retry_after=3)
+    waited = []
+    monkeypatch.setattr(svc.messages.time, "sleep", lambda s: waited.append(s) or r.results.clear())
+
+    assert svc.messages.send("printer", {"text": "Print?", "buttons": PRINT}, 0) == {"message_id": 901}
+    assert waited == [3] and [m for m, _ in r.api_calls].count("editMessageReplyMarkup") == 2
+
+
+def test_pictures_upload_with_the_longer_timeout_and_their_own_names(r, svc, monkeypatch):
+    uploads, sent = [], svc.messages.call
+    monkeypatch.setattr(r.telegram, "uploading_bot", lambda: uploads.append("upload") or r.telegram.bot())
+    monkeypatch.setattr(svc.messages, "call", lambda method, files=None, **params: (
+        uploads.extend(Path(p).name for p in (files or {}).values()) or sent(method, files=files, **params)))
+
+    svc.messages.send("printer", {"text": "Report", "files": [{"name": "report.pdf", "data": b64(b"%PDF")}]}, 0)
+    svc.messages.send("printer", {"text": "Started"}, 0)
+
+    assert uploads == ["report.pdf", "upload"]
+    assert r.telegram.UPLOAD_TIMEOUT > 10
 
 
 def test_bookkeeping_that_fails_after_the_send_still_keeps_the_message(r, svc):
@@ -556,6 +591,16 @@ def test_the_router_loop_sweeps_every_few_seconds_in_the_background(svc, taps, m
     assert swept == [1000, 1006]
 
 
+def test_while_telegram_is_out_of_reach_the_router_loop_doesnt_sweep(svc, taps, monkeypatch):
+    swept = []
+    monkeypatch.setattr(taps, "sweep", swept.append)
+    monkeypatch.setattr(svc.addon.api, "start_once", lambda desk, now: None)
+
+    svc.addon.on_tick(SimpleNamespace(network=Online(False)), 1000)
+
+    assert swept == []
+
+
 def test_a_service_button_tapped_while_the_add_in_is_off_never_reaches_anyone(r, desk, svc, addons_on):
     svc.messages.send("printer", {"text": "Print?", "buttons": PRINT}, 0)
     addons_on()
@@ -718,6 +763,28 @@ def test_sends_over_twenty_a_minute_are_429_with_retry_after(r, http):
     assert len(r.api_calls) == 20
 
 
+def test_a_send_past_the_ones_under_way_waits_its_turn_then_is_429(http, monkeypatch):
+    monkeypatch.setattr(http.api, "SEND_WAIT", 0.1)
+    for _ in range(http.api.MAX_SENDS):
+        http.api._sends.acquire()
+    try:
+        status, answer = http.call("POST", "/v1/messages", {"text": "x"})
+    finally:
+        for _ in range(http.api.MAX_SENDS):
+            http.api._sends.release()
+
+    assert (status, answer["error"], answer["retry_after"]) == (429, "rate_limited", 5)
+
+
+def test_health_checks_and_long_polls_that_bring_nothing_leave_no_log_line(http, capsys):
+    http.call("GET", "/v1/health")
+    http.call("GET", "/v1/presses?wait=0")
+    http.call("POST", "/v1/messages", {"text": "Started"})
+
+    logged = [line for line in capsys.readouterr().err.splitlines() if "service-notify: printer" in line]
+    assert len(logged) == 1 and "POST /v1/messages 200" in logged[0]
+
+
 def test_a_body_over_20_mb_is_413_without_reading_it(http):
     status, answer = http.call("POST", "/v1/messages", {"text": "x"}, headers={"Content-Length": str(21 * 2**20)})
 
@@ -786,6 +853,11 @@ def test_assistant_service_key_prints_a_token_once_and_list_names_the_service(tm
     assert run_script("assistant-service", "revoke", "printer", env=env)[0] == 0
     assert run_script("assistant-service", "list", env=env)[1] == ""
     assert run_script("assistant-service", "key", "Bad Name", env=env)[0] == 1
+    first = run_script("assistant-service", "key", "printer", env=env)[1]
+    assert run_script("assistant-service", "key", "printer", env=env)[:2] == (1, "")  # never silently in its place
+    status, second, _ = run_script("assistant-service", "key", "printer", "--replace", env=env)
+    assert status == 0 and second != first
+    assert len(read_json(tmp_path / "state" / "service-keys.json")) == 1
     assert run_script("assistant-service", "nonsense", env=env)[0] == 2
 
 
@@ -858,6 +930,17 @@ def test_the_client_raises_what_the_api_refused(http, client):
         svc.send("x")
 
     assert (e.value.status, e.value.code) == (401, "unauthorized")
+
+
+def test_the_client_never_sends_again_after_the_buttons_failed(r, http, client):
+    r.results["editMessageReplyMarkup"] = r.telegram.TelegramError("Too Many Requests", retry_after=30)
+    svc = client.Service(f"http://127.0.0.1:{http.listener.port}", http.token)
+
+    with pytest.raises(client.ServiceError) as e:
+        svc.send("Print?", buttons=[[("print:tok", "Print plate 1")]])
+
+    assert (e.value.code, e.value.message_id) == ("buttons_failed", 901)
+    assert [m for m, _ in r.api_calls].count("sendRichMessage") == 1
 
 
 def test_the_client_retries_while_the_listener_is_down(svc, client):

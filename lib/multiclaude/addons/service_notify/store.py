@@ -25,10 +25,22 @@ def private_root():
 
 
 def new_key(name):
-    """A fresh token for the service name, replacing its old one; only its hash is kept."""
+    """A token for a service that has none; only its hash is kept. Never silently in place of
+    one it has: whoever holds the new token gets the service's presses."""
+    if KEYS.has_key(checked(name)):
+        raise ValueError(f"{name} has a token already; --replace makes a new one, which cuts {name} off until it has it")
+    return KEYS.new_key(name)
+
+
+def replace_key(name):
+    """A fresh token for the service, replacing the one it had."""
+    return KEYS.new_key(checked(name))
+
+
+def checked(name):
     if not NAME_RE.fullmatch(name or ""):
         raise ValueError(f"a service name is 1 to 32 of a-z, 0-9 and -, not {name!r}")
-    return KEYS.new_key(name)
+    return name
 
 
 def revoke(name):

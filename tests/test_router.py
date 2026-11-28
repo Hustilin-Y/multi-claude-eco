@@ -534,6 +534,17 @@ def test_a_tap_on_a_kept_question_that_cant_be_read_never_reaches_the_assistant(
     assert ("editMessageReplyMarkup", {"chat_id": ALICE_CHAT, "message_id": "42"}) in r.api_calls
 
 
+@pytest.mark.parametrize("kind", ["checklist", "cancel-clear", "approval"])
+def test_taps_on_the_cores_own_kinds_never_go_to_the_add_ins(r, desk, monkeypatch, kind):
+    write_json(r.paths.ASKS / ALICE_CHAT / "42.json", {"question": "Q", "options": ["A"], "kind": kind})
+    hooks = []
+    monkeypatch.setattr(r.asks.addons, "call", lambda hook, *a: hooks.append(hook) or [])
+
+    desk.inbound(channel("A", msg_id="42", callback_id="cb1", callback_data="ask:0"))
+
+    assert kind in r.asks.questions.CORE_KINDS and "question_tapped" not in hooks
+
+
 def test_an_add_in_that_takes_a_tap_gets_it_and_the_core_does_nothing_more(r, desk, monkeypatch):
     write_json(r.paths.ASKS / ALICE_CHAT / "42.json", {"question": "Q", "options": ["A"], "kind": "service"})
     taken = []

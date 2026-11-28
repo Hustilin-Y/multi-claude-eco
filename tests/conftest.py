@@ -491,6 +491,7 @@ def r(tmp_path, monkeypatch):
 
     bot = RecordingBot()
     monkeypatch.setattr(telegram, "bot", lambda: bot)
+    monkeypatch.setattr(telegram, "uploading_bot", lambda: bot)
     monkeypatch.setattr(telegram, "later", lambda fn, *a, **k: fn(*a, **k))
     monkeypatch.setattr(desk, "in_background", lambda fn, *a: fn(*a))
     monkeypatch.setattr(work.Worker, "start", lambda self: None)  # tests drive the queues themselves

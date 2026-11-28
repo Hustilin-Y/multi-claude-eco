@@ -1,7 +1,8 @@
 """Taps on question buttons: `tg ask` questions (kept in paths.ASKS), whose choice the router shows
 on the question at once and then types into the assistant that asked, the router's own questions
-(approval dialogs, the Cancel under a waiting /clear), which it answers itself, and `tg checklist`
-items, which it ticks or unticks itself. An add-in that brings another
+(approval dialogs, the Cancel under a waiting /clear), which it answers itself, `tg checklist`
+items, which it ticks or unticks itself, and questions of kinds an add-in keeps, which go to that
+add-in (question_tapped) and never to an assistant. An add-in that brings another
 app answers taps there with the same steps: clear_cancel_tapped, full_label, save_answer and
 deliver_choice."""
 import re
@@ -17,9 +18,6 @@ from multiclaude.router import inbound as messages
 BUTTON_RE = re.compile(r"ask:(\d+)")
 CLEAR_CANCELLED = "↩️ Cancelled: your context and our chat stay as they are."
 CLEAR_TOO_LATE = "⌛ Too late: the clear had already started."
-# The kinds of kept question the core answers itself. A tap on any other kind goes to the add-ins
-# (question_tapped) and never to an assistant, even when no add-in that's on takes it.
-CORE_KINDS = (questions.CHECKLIST, work.CANCEL_CLEAR, "approval")
 # One lock per checklist message, so its buttons are redrawn one at a time, each from the saved state.
 CHECKLIST_LOCKS = defaultdict(threading.Lock)
 
@@ -41,7 +39,7 @@ def answer(user, tap, now, to=None):
             return
         ask = {}
     kind = ask.get("kind")
-    if kind and kind not in CORE_KINDS:
+    if kind and kind not in questions.CORE_KINDS:  # an add-in's, even when no add-in that's on takes it
         if not any(addons.call("question_tapped", user, tap, path, ask, now)):
             log(f"{user.name}: tap on question {msg_id} of kind {kind!r}, which nothing that's on takes; "
                 "buttons taken off")
@@ -53,12 +51,12 @@ def answer(user, tap, now, to=None):
     if ask.get("answer") is not None:
         log(f"{user.name}: question {msg_id} was already answered; ignoring a tap on {tap.text!r}")
         return
-    if ask.get("kind") == work.CANCEL_CLEAR:
+    if kind == questions.CANCEL_CLEAR:
         clear_cancel_tapped(user, TelegramChat(user.chat_id), path, ask, msg_id)
         return
     label = full_label(ask.get("options") or [], tap.attrs.get("callback_data", ""), tap.text)
     question = ask.get("question")
-    if ask.get("kind") == "approval":
+    if kind == questions.APPROVAL:
         approval_tapped(user, path, ask, msg_id, label)
         return
     if question:

@@ -21,6 +21,9 @@ def question_tapped(user, tap, path, ask, now):
 
 def on_tick(desk, now):
     api.start_once(desk, now)
+    network = getattr(desk, "network", None)
+    if network and not network.online():
+        return  # every edit would fail: what's due comes off once Telegram is back
     if now >= _next_sweep[0] and _sweeping.acquire(blocking=False):
         _next_sweep[0] = now + SWEEP_EVERY
         threading.Thread(target=_sweep, args=(now,), daemon=True, name="service-notify sweep").start()

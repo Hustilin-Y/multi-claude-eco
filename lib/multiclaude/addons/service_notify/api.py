@@ -9,9 +9,10 @@ which the add-in starts from its first on_tick. Every request carries `Authoriza
   GET    /v1/presses?wait=N   the presses waiting, held up to N seconds (at most 25) -> {"presses"}
   GET    /v1/health           -> {"ok", "telegram": "reachable" | "unreachable"}
 
-Errors are {"error", "detail"?, "retry_after"?}. Nothing of a request but its service, route,
+Errors are {"error", "detail"?, "retry_after"?, "message_id"?}. Nothing of a request but its service, route,
 status, time and sizes is logged: never a token, a text, a button id or a file."""
 import collections
+import contextlib
 import http.server
 import json
 import math
@@ -33,7 +34,10 @@ MAX_BODY = 20 * 2**20
 MAX_WAIT = 25
 MAX_POLLS = 4
 MAX_CONNECTIONS = 16  # open at once, from every service
-IDLE_TIMEOUT = 30     # seconds a connection may send nothing
+IDLE_TIMEOUT = 10     # seconds a connection may send nothing
+# Sends whose body is read and sent at once: each holds its body several times over (raw, parsed,
+# decoded, uploaded) in the router's memory. The next one waits its turn for SEND_WAIT, then 429.
+MAX_SENDS, SEND_WAIT = 2, 30
 LIMITS = {"send": 20, "change": 60}  # a minute, per service
 RETRY_START_EVERY = 60
 MESSAGE_RE = re.compile(r"/v1/messages/(\d{1,15})")
@@ -41,6 +45,7 @@ MESSAGE_RE = re.compile(r"/v1/messages/(\d{1,15})")
 _windows = collections.defaultdict(collections.deque)  # (service, kind) -> the times of recent calls
 _polls = collections.Counter()  # service -> long-polls held now
 _counts_lock = threading.Lock()
+_sends = threading.BoundedSemaphore(MAX_SENDS)
 
 
 def polls(service):
@@ -58,6 +63,16 @@ def within_limit(service, kind, now):
             return max(1, math.ceil(window[0] + 60 - now))
         window.append(now)
         return None
+
+
+@contextlib.contextmanager
+def a_place_to_send():
+    if not _sends.acquire(timeout=SEND_WAIT):
+        raise messages.Refused(429, "rate_limited", f"at most {MAX_SENDS} sends at once", retry_after=5)
+    try:
+        yield
+    finally:
+        _sends.release()
 
 
 class Listener:
@@ -149,15 +164,17 @@ def handler_for(listener):
             except messages.Refused as e:
                 status = e.status
                 answer = {"error": e.code, **({"detail": e.detail} if e.detail else {}),
-                          **({"retry_after": e.retry_after} if e.retry_after else {})}
+                          **({"retry_after": e.retry_after} if e.retry_after else {}),
+                          **({"message_id": e.message_id} if e.message_id else {})}
             except Exception:
                 log(f"service-notify: {method} {route.path} failed:\n{traceback.format_exc().rstrip()}")
                 status, answer = 500, {"error": "internal"}
             if not self.body_read and (self.headers.get("Content-Length") or "0") != "0":
                 self.close_connection = True  # a body left unread would be taken for the next request
             self.answer(status, answer)
-            ms = round((time.monotonic() - started) * 1000)
-            log(f"service-notify: {service or '?'} {method} {route.path} {status} {ms}ms{sizes}")
+            if status != 200 or method != "GET" or sizes:  # not a health check, or a long-poll that brought nothing
+                ms = round((time.monotonic() - started) * 1000)
+                log(f"service-notify: {service or '?'} {method} {route.path} {status} {ms}ms{sizes}")
 
         def service(self):
             header = self.headers.get("Authorization") or ""
@@ -184,11 +201,13 @@ def handler_for(listener):
                 online = listener.network.online() if listener.network else True
                 return 200, {"ok": True, "telegram": "reachable" if online else "unreachable"}, ""
             if method == "GET" and route.path == "/v1/presses":
-                return 200, {"presses": self.presses(service, route.query)}, ""
+                presses = self.presses(service, route.query)
+                return 200, {"presses": presses}, f" presses={len(presses)}" if presses else ""
             if method == "POST" and route.path == "/v1/messages":
                 self.limit(service, "send", now)  # before the body, which may be 20 MB
-                request = self.body()
-                answer = messages.send(service, request, now)
+                with a_place_to_send():
+                    request = self.body()
+                    answer = messages.send(service, request, now)
                 return 200, answer, sizes_of(request)
             if method in ("PATCH", "DELETE") and message:
                 self.limit(service, "change", now)
