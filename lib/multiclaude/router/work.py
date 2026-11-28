@@ -10,12 +10,14 @@ from dataclasses import dataclass, field
 from multiclaude import addons, bot, telegram
 from multiclaude.channels import TelegramChat
 from multiclaude.log import log
-from multiclaude.router import approvals, switching
+from multiclaude.router import approvals, inbound, switching
 from multiclaude.router.session import DialogOpen
 
 DELIVER_TIMEOUT = 120  # how long work waits for a (re)starting assistant
 BOX_HIDDEN_TELL = 60   # how long work waits for a hidden message box before the person hears why
 POLL = 0.5
+# A comment and the forward it goes with, or an album, reach the router milliseconds apart.
+GATHER = 1.0
 DELETE_BATCH = 100     # deleteMessages takes up to 100 ids
 CLEAR_WAITS = ("🧹 I'll clear once I finish what I'm doing. Tap **Cancel** to keep everything, "
                "or send /stop to stop me and clear now.")
@@ -48,26 +50,43 @@ class Deliver(Work):
     header: str = ""
     body: str = ""
     msg_id: str = ""
+    sent: inbound.Inbound | None = None  # the person's own message, which goes in with those sent with it
     waits_for_idle = False
 
     def run(self, user, now):
+        """Type it in, together with the person's own messages queued right behind it, once
+        GATHER has passed since the last of them, so what they sent together starts one turn."""
+        batch = self.sent_with(user.queue)
+        if self.sent and now - batch[-1].since < GATHER:
+            return False
+        header, body = ((self.header, self.body) if len(batch) == 1
+                        else inbound.typed_together(user.display, [work.sent for work in batch]))
         try:
-            user.type_message(self.header, self.body)
-            log(f"{user.name}: delivered {self.header}")
+            user.type_message(header, body)
+            log(f"{user.name}: delivered {header}")
         except DialogOpen:
             return False  # it waits; the worker relays the dialog
         except (subprocess.SubprocessError, OSError) as e:
             log(f"{user.name}: delivery failed: {e}")
             if now - self.since > DELIVER_TIMEOUT:
-                user.queue.pop(0)
+                del user.queue[:len(batch)]
                 user.turn.busy = False
                 user.say(f"⚠️ Your message couldn't be typed into {bot.name()}'s terminal, so it "
                          "didn't get it. Send it again in a minute; if it keeps happening, "
                          "run `assistant status` on the VM.")
             return False
-        user.queue.pop(0)
+        del user.queue[:len(batch)]
         user.turn.delivered(now)
         return True
+
+    def sent_with(self, queue):
+        """This delivery (queue's first item) and the person's own messages from the same app queued right behind it."""
+        batch = [self]
+        for work in queue[1:]:
+            if not (self.sent and isinstance(work, Deliver) and work.sent and work.sent.app == self.sent.app):
+                break
+            batch.append(work)
+        return batch
 
 
 @dataclass

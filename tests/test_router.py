@@ -708,6 +708,52 @@ def test_serve_delivers_messages_in_order(r, desk, monkeypatch):
     assert alice.queue == [] and alice.turn.busy
 
 
+def test_a_message_waits_a_moment_for_the_ones_sent_with_it(r, desk, monkeypatch):
+    alice = desk.users["alice"]
+    typed = []
+    monkeypatch.setattr(alice, "ready", lambda: True)
+    monkeypatch.setattr(alice, "type_message", lambda header, body: typed.append(header))
+    desk.inbound(channel("Check out", msg_id="10"))
+
+    r.work.serve(alice, time.time())
+
+    assert typed == [] and len(alice.queue) == 1
+
+
+def test_messages_sent_together_are_typed_in_as_one(r, desk, monkeypatch):
+    # A comment and the forward it went with were typed in 0.5 s apart, and the assistant answered the comment alone (28 Nov 2026).
+    alice = desk.users["alice"]
+    typed = []
+    monkeypatch.setattr(alice, "ready", lambda: True)
+    monkeypatch.setattr(alice, "type_message", lambda header, body: typed.append((header, body)))
+    desk.inbound(channel("Check out", msg_id="10"))
+    desk.inbound(channel("https://example.com/pull/6", msg_id="11"))
+
+    r.work.serve(alice, time.time() + r.work.GATHER)
+
+    assert typed == [("[Telegram from Alice · msgs 10, 11 · 2026-10-08 18:53 UTC] My messages are pasted below, "
+                      "in the order I sent them; together they are my own request to you:",
+                      "msg 10:\nCheck out\n\nmsg 11:\nhttps://example.com/pull/6")]
+    assert alice.queue == [] and alice.turn.busy
+
+
+def test_reactions_and_router_notes_go_in_on_their_own(r, desk, monkeypatch):
+    alice = desk.users["alice"]
+    typed = []
+    monkeypatch.setattr(alice, "ready", lambda: True)
+    monkeypatch.setattr(alice, "type_message", lambda header, body: typed.append(header))
+    desk.inbound(channel("hello", msg_id="10"))
+    desk.inbound(channel("👍", msg_id="10", reaction="👍"))
+    alice.queue_message(r.work.Deliver(time.time(), "[Router · a note]"), time.time())
+    desk.inbound(channel("and this", msg_id="11"))
+
+    r.work.serve(alice, time.time() + r.work.GATHER)
+
+    assert [header.split("]")[0] for header in typed] == [
+        "[Telegram from Alice · msg 10 · 2026-10-08 18:53 UTC", "[Telegram from Alice · reaction on msg 10 · 2026-10-08 18:53 UTC",
+        "[Router · a note", "[Telegram from Alice · msg 11 · 2026-10-08 18:53 UTC"]
+
+
 def test_serve_holds_a_switch_until_the_turn_ends(r, desk, monkeypatch):
     alice = desk.users["alice"]
     monkeypatch.setattr(alice, "ready", lambda: True)
@@ -2090,7 +2136,7 @@ def test_cancel_drops_the_waiting_clear_and_lets_messages_through(r, desk, monke
 
     tap(desk, notice, "ask:0", "Cancel")
     tap(desk, notice, "ask:0", "Cancel")  # a second tap changes nothing
-    r.work.serve(alice, time.time())
+    r.work.serve(alice, time.time() + r.work.GATHER)
 
     edits = [p for m, p in r.api_calls if m == "editMessageText"]
     assert [e["rich_message"]["markdown"] for e in edits] == [r.asks.CLEAR_CANCELLED]

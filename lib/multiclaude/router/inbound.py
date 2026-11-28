@@ -31,6 +31,7 @@ WRONG_LAYOUT_LETTERS = str.maketrans(
     "qwertyuiopasdfghjklzxcvbnm" "wertyuiopasdfghjklzxcvbnm" "aehioyviyiy")
 DESK_COMMAND_RES = (CLEAR_RE, RESTART_RE, STOP_RE, USAGE_RE, HELP_RE, CONFIG_RE, SWITCH_RE, PLUGIN_RE, RELOAD_RE)
 OWN_REQUEST = "My message is pasted below; it is my own request to you:"
+OWN_REQUESTS = "My messages are pasted below, in the order I sent them; together they are my own request to you:"
 
 
 @dataclass(frozen=True)
@@ -176,6 +177,15 @@ def typed(display, inbound):
         what = "reaction on your msg {id}" if inbound.via else "reaction on msg {id}"
         return header(display, inbound, what=what, intro=f"I reacted with {inbound.reaction}."), how_to_answer(inbound)
     return header(display, inbound), body(inbound)
+
+
+def typed_together(display, sent):
+    """(header, body) for several of the person's own messages sent together, such as a comment and
+    the forward it goes with: one header for all and each body under its msg id, so the assistant
+    takes them as one request instead of answering the first before it sees the rest."""
+    ids = ", ".join(str(inbound.msg_id) for inbound in sent)
+    bodies = [f"msg {inbound.msg_id}:\n{body(inbound)}" for inbound in sent]
+    return header(display, sent[0], what=f"msgs {ids}", intro=OWN_REQUESTS), "\n\n".join(bodies)
 
 
 def body(inbound):
