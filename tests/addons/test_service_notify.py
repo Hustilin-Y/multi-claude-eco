@@ -882,3 +882,65 @@ def test_the_client_needs_nothing_outside_the_standard_library():
                           capture_output=True, text=True, env={"PATH": os.environ.get("PATH", "")})
 
     assert done.returncode == 0, done.stderr
+
+
+# -- presses from the Mini App -----------------------------------------------------------
+
+
+def sent_id(svc, request, now=0, service="bambu"):
+    return int(svc.messages.send(service, request, now)["message_id"])
+
+
+def test_press_from_app_queues_with_via_and_shows_it(r, desk, svc, taps):
+    msg_id = sent_id(svc, {"text": "Print?", "buttons": PRINT})
+
+    assert taps.press_from_app(desk.users["alice"], "bambu", msg_id, 0, 10) is None
+
+    [press] = presses(svc)
+    assert (press["button_id"], press["by"], press["via"], press["message_id"]) == ("print:tok", "alice", "miniapp", msg_id)
+    method, params = r.api_calls[-1]
+    assert (method, shown(params)) == ("editMessageText", "Print?\n\n⏳ Print plate 1… (Mini App)")
+    assert desk.users["alice"].queue == []
+
+
+def test_a_tap_press_says_telegram(r, desk, svc, taps):
+    sent_id(svc, {"text": "Print?", "buttons": PRINT})
+    tap(r, desk, "Print plate 1", 0, 10)
+    assert presses(svc)[0]["via"] == "telegram"
+
+
+def test_press_from_app_refuses_answered_and_expired(r, desk, svc, taps):
+    alice = desk.users["alice"]
+    first = sent_id(svc, {"text": "Print?", "buttons": PRINT, "expires_in": 600})
+    taps.press_from_app(alice, "bambu", first, 0, 10)
+    assert taps.press_from_app(alice, "bambu", first, 1, 11) == "answered"
+
+    second = sent_id(svc, {"text": "Stop?", "buttons": PRINT, "expires_in": 600}, now=0)
+    assert taps.press_from_app(alice, "bambu", second, 0, 601) == "expired"
+    assert [p["message_id"] for p in presses(svc)] == [first]
+
+
+def test_press_from_app_refuses_other_service_chat_and_button(r, desk, svc, taps):
+    msg_id = sent_id(svc, {"text": "Print?", "buttons": PRINT})
+    assert taps.press_from_app(desk.users["alice"], "other", msg_id, 0, 10) == "other_service"
+    assert taps.press_from_app(desk.users["bob"], "bambu", msg_id, 0, 10) == "unknown"
+    assert taps.press_from_app(desk.users["alice"], "bambu", msg_id, 2, 10) == "no_button"
+    assert taps.press_from_app(desk.users["alice"], "bambu", msg_id, -1, 10) == "no_button"
+    assert taps.press_from_app(desk.users["alice"], "bambu", 424242, 0, 10) == "unknown"
+    assert presses(svc) == []
+
+
+def test_tap_after_app_press_is_ignored(r, desk, svc, taps):
+    msg_id = sent_id(svc, {"text": "Print?", "buttons": PRINT})
+    taps.press_from_app(desk.users["alice"], "bambu", msg_id, 0, 10)
+    tap(r, desk, "Print plate 1", 0, 11, msg_id=msg_id)
+    assert len(presses(svc)) == 1
+
+
+def test_presses_api_hands_over_via(r, desk, svc, taps):
+    from multiclaude.addons.service_notify import api
+    msg_id = sent_id(svc, {"text": "Print?", "buttons": PRINT}, now=time.time())
+    assert taps.press_from_app(desk.users["alice"], "bambu", msg_id, 0, time.time()) is None
+    [press] = [p for p in svc.store.Service("bambu").take_presses(time.time())]
+    assert press["via"] == "miniapp"
+    assert "via" in api.PRESS_FIELDS
