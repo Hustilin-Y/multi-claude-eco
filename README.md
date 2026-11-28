@@ -35,6 +35,7 @@ Add-ins are in the repo but off until the owner turns them on. The core works fu
 | [model-fallback](addons/model-fallback/README.md) | A person hears when a safety classifier moves their assistant to another model, and it can switch back | Nothing |
 | [skill-notes](addons/skill-notes/README.md) | A quiet note in the chat whenever an assistant loads a skill | Nothing |
 | [backup](addons/backup/README.md) | Every night, everyone's settings, memory and files, and the bot's own, go into an encrypted backup off the machine | restic, and somewhere to keep the backups |
+| [service-notify](addons/service-notify/README.md) | Programs on the machine message the owner with pictures and buttons, and get the presses back, with no assistant in the loop | Nothing |
 
 ## Requirements
 
@@ -209,7 +210,7 @@ assistant addon disable <name>
 
 Enabling runs the add-in's own setup, if it has one (voice-notes installs Whisper, stickers its renderer, slack checks its tokens, backup starts its repository), and disabling its teardown (backup takes its cron line out). Enabling lists it in `config.json`, adds its rules to the assistants' rules, restarts the router and prints anything left to do. Each assistant reads its new rules from its next `/clear` or restart. Each add-in's README says what it needs and how to set it up:
 
-- [slack](addons/slack/README.md), [siri](addons/siri/README.md), [voice-notes](addons/voice-notes/README.md), [stickers](addons/stickers/README.md), [locations](addons/locations/README.md), [reminders](addons/reminders/README.md), [quiet-hours](addons/quiet-hours/README.md), [model-fallback](addons/model-fallback/README.md), [skill-notes](addons/skill-notes/README.md), [backup](addons/backup/README.md)
+- [slack](addons/slack/README.md), [siri](addons/siri/README.md), [voice-notes](addons/voice-notes/README.md), [stickers](addons/stickers/README.md), [locations](addons/locations/README.md), [reminders](addons/reminders/README.md), [quiet-hours](addons/quiet-hours/README.md), [model-fallback](addons/model-fallback/README.md), [skill-notes](addons/skill-notes/README.md), [backup](addons/backup/README.md), [service-notify](addons/service-notify/README.md)
 
 ## Adding people
 
@@ -222,6 +223,8 @@ assistant pair <code> <name> "Display Name"     # approves them and closes pairi
 `assistant invite off` closes pairing without adding anyone. `assistant pair <code>` without a name only approves the code; `assistant add-user <name> <telegram id> ["Display Name"]` later gives an approved person their assistant. Telegram access is only ever changed on the machine, never from a chat message.
 
 A person's entry in `users.json` can also hold `"timezone"` (an IANA name such as `"Europe/Berlin"`), which sets the times the bot shows them. Their assistant sets it when it learns it, and they can change it in the control panel.
+
+`"code_mode": true` turns on Claude Code's experimental [Code Mode](https://code.claude.com/docs/en/code-mode) for that person's assistant: Claude writes JavaScript that calls its tools, which saves tokens on tasks across many files. It takes effect at their next `/restart`, with a new conversation, and turning it off needs one too. The first time on a machine, Claude Code asks once in the terminal whether to turn it on: answer it with `assistant attach <name>`. Scheduled jobs don't use it.
 
 ## Bot commands
 
@@ -309,6 +312,7 @@ assistant wake <name>           # start an assistant that was put to sleep while
 assistant notify [--user <name>] "text"         # a Telegram message to one person (default: the owner)
 assistant background [--user <name>] <pid> "what"   # a process an assistant runs in the background, for /stop to end
 assistant job [--user <name>] [--model <m>] [--deny <tools>] "instructions"   # a one-shot task whose answer goes to that person
+assistant cron add|remove [--user <name>] …   # a person's job in the shared crontab, never touching anyone else's
 assistant health                # the machine now: CPU, memory, swap, disks, the router and each assistant
 assistant shared list           # plugins, skills and marketplaces: shared and per person
 assistant shared sync [--dry-run] [--wait]
@@ -319,7 +323,7 @@ assistant addon list|enable|disable
 `assistant restart` stops every tmux session, so everyone's assistant restarts (each resumes its conversation). For a router change, restart only the router: `sudo systemctl restart assistant-watcher`. It routes the messages that arrived while it was down.
 
 - **Logs:** the router logs to `journalctl -u assistant-watcher`. When an assistant's turn looks stuck, or a message waits a minute for something on its screen that the router can't read, the router saves what that terminal showed in `state/screens/<name>/` (the last 20). Jobs log to `~/assistant/logs/jobs.log` (errors in `jobs.err`), and each run's outcome, cost and the start of its answer to `state/job-runs/<name>.jsonl` (each person's last 200, shown in the control panel's Activity); the shared sync logs to `logs/shared.log`, and the health samples to `logs/health.log` (only the alerts they sent, and errors).
-- **Scheduled jobs:** each assistant adds its own cron lines (`assistant job --user <name> "…"`), each under a `# <name>:` comment and listed in that person's `~/workspaces/<name>/jobs.md`. `assistant job` runs `claude -p` in the person's folder, at most one run of the same job at a time and for up to an hour, and sends its final answer unless that is exactly `NOTHING`, which makes "only tell me if…" jobs possible. `--model` runs a job on another model than the person's saved one, and `--deny` forbids tools outright (sending mail, say).
+- **Scheduled jobs:** each assistant adds its own jobs with `assistant cron add` (lines running `assistant job --user <name> "…"`), each under a `# <name>:` comment and listed in that person's `~/workspaces/<name>/jobs.md`, and takes them out with `assistant cron remove`. Neither touches anyone else's lines, and each keeps the crontab as it was in `state/crontab/`. `assistant job` runs `claude -p` in the person's folder, at most one run of the same job at a time and for up to an hour, and sends its final answer unless that is exactly `NOTHING`, which makes "only tell me if…" jobs possible. `--model` runs a job on another model than the person's saved one, and `--deny` forbids tools outright (sending mail, say).
 - **Plugins, skills and marketplaces:** each assistant installs them only in its person's own `~/workspaces/<name>/.claude/`. Once everyone has the same one, `assistant shared sync` moves it to `~/.claude` and deletes the copies. If someone turns a shared one off for themselves, it moves back into everyone else's folder. When you add a person, everything shared moves back into the folders of the people who had it, so the newcomer starts with none of it. The owner gets a message for each move. The bot's `/plugin` and `/mcp` commands run with the `env` from the person's own `.claude/settings.json`, so a login kept there, such as their own GitHub login for a private marketplace, works for them too.
 
 ## What's not in this repo

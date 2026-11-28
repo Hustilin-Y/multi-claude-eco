@@ -1,13 +1,10 @@
 """Tests for the locations add-in (lib/multiclaude/addons/locations: shared locations, OwnTracks'
 updates from the relay; its plugin patch and bin/run-user.sh's ASSISTANT_LOCATION)."""
 import json
-import os
-import shutil
-import subprocess
 
 import pytest
 
-from conftest import ALICE_CHAT, BIN, RELAY, channel, enable_addons, patch, plugin_version, sent, write_json
+from conftest import ALICE_CHAT, RELAY, channel, enable_addons, patch, plugin_version, sent, session_env, write_json
 
 
 @pytest.fixture
@@ -151,33 +148,6 @@ def test_the_plugin_passes_locations_on_and_keeps_the_latest_position_only_while
 
 
 # --- the sessions' ASSISTANT_LOCATION ---
-
-STOP_AND_TELL = """#!/bin/sh
-# claude, for run-user.sh: write what it got in its environment, then end the run loop.
-env > "$HOME/claude-env"
-kill -TERM "$PPID"
-"""
-
-
-def session_env(tmp_path, *addons):
-    """The environment bin/run-user.sh starts alice's claude with, with those add-ins on."""
-    home = tmp_path / "home"
-    root = home / "assistant"
-    (root / "bin").mkdir(parents=True)
-    for script in ("run-user.sh", "common.sh"):
-        shutil.copy2(BIN / script, root / "bin" / script)
-    write_json(root / "users.json", {"alice": {"telegram_id": ALICE_CHAT, "display": "Alice"}})
-    enable_addons(root, *addons)
-    (home / "workspaces" / "alice").mkdir(parents=True)
-    claude = home / ".local" / "bin" / "claude"
-    claude.parent.mkdir(parents=True)
-    claude.write_text(STOP_AND_TELL)
-    claude.chmod(0o755)
-    env = {key: value for key, value in os.environ.items() if key != "ASSISTANT_LOCATION"}
-    subprocess.run([str(root / "bin" / "run-user.sh"), "alice"], env={**env, "HOME": str(home)},
-                   capture_output=True, timeout=30)
-    return dict(line.split("=", 1) for line in (home / "claude-env").read_text().splitlines() if "=" in line)
-
 
 def test_sessions_find_the_latest_location_only_while_it_is_on(tmp_path):
     on = session_env(tmp_path / "on", "locations")

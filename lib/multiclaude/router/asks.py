@@ -1,14 +1,15 @@
 """Taps on question buttons: `tg ask` questions (kept in paths.ASKS), whose choice the router shows
 on the question at once and then types into the assistant that asked, the router's own questions
-(approval dialogs, the Cancel under a waiting /clear), which it answers itself, and `tg checklist`
-items, which it ticks or unticks itself. An add-in that brings another
+(approval dialogs, the Cancel under a waiting /clear), which it answers itself, `tg checklist`
+items, which it ticks or unticks itself, and questions of kinds an add-in keeps, which go to that
+add-in (question_tapped) and never to an assistant. An add-in that brings another
 app answers taps there with the same steps: clear_cancel_tapped, full_label, save_answer and
 deliver_choice."""
 import re
 import threading
 from collections import defaultdict
 
-from multiclaude import crosschat, jsonfile, paths, questions, telegram
+from multiclaude import addons, crosschat, jsonfile, paths, questions, telegram
 from multiclaude.channels import TelegramChat
 from multiclaude.log import log
 from multiclaude.router import approvals, work
@@ -30,21 +31,32 @@ def answer(user, tap, now, to=None):
         log(f"{user.name}: button tap without a question message id; ignored")
         return
     path = paths.ASKS / str(user.chat_id) / f"{msg_id}.json"
-    ask = jsonfile.read_json(path, {})
+    ask = jsonfile.read_json(path, None)
     if not isinstance(ask, dict):
+        if path.exists():  # kept, but cut off or not a question: whose it is can't be told, so nobody's
+            log(f"{user.name}: tap on question {msg_id}, whose kept file can't be read; buttons taken off")
+            telegram.later(telegram.api, "editMessageReplyMarkup", chat_id=user.chat_id, message_id=msg_id)
+            return
         ask = {}
-    if ask.get("kind") == questions.CHECKLIST:
+    kind = ask.get("kind")
+    if kind and kind not in questions.CORE_KINDS:  # an add-in's, even when no add-in that's on takes it
+        if not any(addons.call("question_tapped", user, tap, path, ask, now)):
+            log(f"{user.name}: tap on question {msg_id} of kind {kind!r}, which nothing that's on takes; "
+                "buttons taken off")
+            telegram.later(telegram.api, "editMessageReplyMarkup", chat_id=user.chat_id, message_id=msg_id)
+        return
+    if kind == questions.CHECKLIST:
         checklist_tapped(user, path, ask, msg_id, tap.attrs.get("callback_data", ""))
         return
     if ask.get("answer") is not None:
         log(f"{user.name}: question {msg_id} was already answered; ignoring a tap on {tap.text!r}")
         return
-    if ask.get("kind") == work.CANCEL_CLEAR:
+    if kind == questions.CANCEL_CLEAR:
         clear_cancel_tapped(user, TelegramChat(user.chat_id), path, ask, msg_id)
         return
     label = full_label(ask.get("options") or [], tap.attrs.get("callback_data", ""), tap.text)
     question = ask.get("question")
-    if ask.get("kind") == "approval":
+    if kind == questions.APPROVAL:
         approval_tapped(user, path, ask, msg_id, label)
         return
     if question:

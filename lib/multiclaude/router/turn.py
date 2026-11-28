@@ -10,6 +10,8 @@ from multiclaude.log import log
 from multiclaude.router.transcript import INTERRUPTED_MARKER
 
 STALE_AFTER = 15 * 60  # a turn that hasn't written anything this long has died (crash, interrupt)
+# Claude Code starts the turn for a queued item within a second of the last one ending.
+QUEUED_TURN_GRACE = 30
 REPLY_RE = re.compile(r"\btg\s+send\b|\bassistant\s+notify\b")
 ERROR_TEXT_MAX = 300
 # Claude Code's kinds of API error that trying again unchanged won't fix: a login, billing or
@@ -49,12 +51,21 @@ def written_at(entry):
         return time.time()
 
 
-def telling(entry):
-    """Whether an entry says something about a turn: one Turn.handle acts on. Starting up, a
-    session's transcript is read back to the latest of these (Tail.recent)."""
+def turn_event(entry):
+    """What an entry tells Turn.handle about a turn, or None. Starting up, a session's transcript is read
+    back to the latest entry that tells something (Tail.recent)."""
     kind = entry.get("type")
-    return (kind in ("queue-operation", "assistant") or kind == "system" and entry.get("subtype") == "turn_duration"
-            or kind == "user" and (bool(entry.get("queueTranscriptOnly")) or interrupted(entry)))
+    if kind == "queue-operation":
+        return "queued"
+    if kind == "assistant":
+        return "reply"
+    if kind == "system" and entry.get("subtype") == "turn_duration":
+        return "ended"
+    if kind == "user" and interrupted(entry):
+        return "interrupted"
+    if kind == "user" and entry.get("queueTranscriptOnly"):
+        return "noted"
+    return None
 
 
 class Turn:
@@ -63,6 +74,7 @@ class Turn:
     def __init__(self, name):
         self.name = name
         self.busy = False
+        self.only_queued = False  # busy only with messages still in the router's queue
         self.pending = 0         # queued messages no turn has picked up yet
         self.in_turn = False     # it started working on something and hasn't finished
         self.last_write = 0.0    # when its transcript last grew
@@ -71,10 +83,11 @@ class Turn:
         self.failed = None       # a Failure the desk hasn't dealt with yet (recovery.py)
         self.model = None        # the model of its latest reply (the model-fallback add-in reads it)
         self.stalled = False     # judged stuck, and nothing written since: a dialog may still open
+        self.ended_with_queue = False  # its turn ended while items still counted as queued
         self.scheduled = 0.0     # when it last scheduled something inside Claude Code (SCHEDULING_TOOLS)
 
     def end(self):
-        self.busy = self.in_turn = False
+        self.busy = self.in_turn = self.only_queued = False
 
     def reset(self):
         """End the turn and forget the messages queued in it: claude restarted or its context was cleared."""
@@ -82,24 +95,42 @@ class Turn:
         self.pending = 0
 
     def expect(self, now):
-        """A message is on its way: show "typing…" right away, and start the stuck-turn clock
+        """A message is queued: show "typing…" right away, and start the stuck-turn clock
         now rather than at the last transcript write, which may be hours old."""
+        if not self.busy:
+            self.only_queued = True
         self.busy, self.last_write = True, now
+
+    def delivered(self, now):
+        """A message was typed in: Claude Code works on it until its turn ends."""
+        self.busy, self.only_queued, self.last_write = True, False, now
+
+    @property
+    def working(self):
+        """Busy with something Claude Code has. Messages still in the router's queue don't count, or
+        work ahead of them that waits for an idle assistant would wait for them, and they for it."""
+        return self.busy and not self.only_queued
 
     def handle(self, entry):
         self.stalled = False
         kind = entry.get("type")
-        if kind == "queue-operation":
-            self.busy = True
+        if kind == "assistant" or (kind == "user" and not entry.get("queueTranscriptOnly")):
+            self.ended_with_queue = False
+        event = turn_event(entry)
+        if event == "queued":
+            self.busy, self.only_queued = True, False
             self.pending = self.pending + 1 if entry.get("operation") == "enqueue" else max(0, self.pending - 1)
-        elif kind == "assistant":
+        elif event == "reply":
             self.handle_reply(entry)
-        elif kind == "user" and interrupted(entry) and self.pending == 0:
+        elif event == "interrupted" and self.pending == 0:
             self.end()  # Escape (or /stop) ends a turn without the usual turn_duration entry
-        elif kind == "user" and entry.get("queueTranscriptOnly") and self.pending == 0 and not self.in_turn:
+        elif event == "noted" and self.pending == 0 and not self.in_turn:
             self.end()  # a queued item Claude Code only wrote down, starting no turn
-        elif kind == "system" and entry.get("subtype") == "turn_duration" and self.pending == 0:
-            self.end()
+        elif event == "ended":
+            if self.pending == 0:
+                self.end()
+            else:
+                self.ended_with_queue = True
 
     def handle_reply(self, entry):
         content = (entry.get("message") or {}).get("content") or []
@@ -114,6 +145,7 @@ class Turn:
             self.failed = Failure(text, retryable(entry))
             return
         self.busy = self.in_turn = True
+        self.only_queued = False
         model = (entry.get("message") or {}).get("model") or ""
         if model.startswith("claude-"):  # not Claude Code's own "<synthetic>" notes
             self.model = model
@@ -124,6 +156,14 @@ class Turn:
                 self.last_reply = time.time()
             if block.get("name") in SCHEDULING_TOOLS:
                 self.scheduled = written_at(entry)
+
+    def settle(self, now):
+        """End a turn whose queued items never started one: the count was off, as Code Mode's
+        poll results don't always pair an enqueue with a dequeue, and the turn would wait for the stuck check."""
+        if self.ended_with_queue and now - self.last_write > QUEUED_TURN_GRACE:
+            log(f"{self.name}: no turn started for the {self.pending} items counted as queued; idle")
+            self.ended_with_queue = False
+            self.reset()
 
     def postpone_stuck(self, now):
         """Judge it stuck no sooner than STALE_AFTER from now. While the VM is offline a turn is
