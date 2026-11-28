@@ -217,9 +217,8 @@ class Session:
         return not (background.still_running(self.name) or self.schedules_inside(now, proc[1]))
 
     def hibernate(self, pid):
-        """Put the session to sleep: exit claude as for an update restart, mark it asleep, so
-        `assistant start-users` leaves it be, and end its tmux session, run loop and all, before
-        that loop starts claude again (it waits 5 seconds). Whether it went."""
+        """Exit claude as for an update restart, mark it asleep for `assistant start-users`, and end its tmux
+        session, run loop and all, before that loop starts claude again (it waits 5 seconds)."""
         self.restart(pid)
         asleep.mark(self.name)
         try:
@@ -227,8 +226,6 @@ class Session:
         except (subprocess.SubprocessError, OSError) as e:
             asleep.unmark(self.name)
             log(f"{self.name}: can't end its tmux session, so it stays up: {e}")
-            return False
-        return True
 
     def wake_up(self, fresh=False):
         """Start a sleeping session again (`assistant wake`), with a new conversation if fresh,

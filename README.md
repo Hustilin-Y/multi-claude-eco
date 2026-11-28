@@ -192,13 +192,13 @@ The bot calls itself by its Telegram name, saved as `name` in `config.json`. To 
 
 ### A machine short of memory
 
-Each person's assistant holds 350 to 600 MB while it runs, whether or not anyone talks to it. To have idle ones put to sleep, add to `~/assistant/config.json`:
+Each person's assistant holds 350 to 600 MB while it runs, whether or not anyone talks to it. The bot can put idle ones to sleep, but only once you set how long one must have been idle, in minutes, in `~/assistant/config.json`:
 
 ```json
 {"hibernate_after_minutes": 30}
 ```
 
-The router reads it within a minute, with no restart. An assistant that has been idle that long has its whole tmux session ended, and the person's next message starts it again with its conversation: that first answer takes some seconds longer, with "typing…" showing meanwhile, and their session-only `/model` and `/effort` are put back first. An assistant stays up while it works, while a command or a program it listed with `assistant background` runs, and while it has something scheduled inside Claude Code (CronCreate, `/loop`), which only a running session carries out; scheduled jobs in the crontab never need the session. `assistant status`, `assistant health`, `/usage` and the control panel show such an assistant as asleep, the health alerts don't count it as missing, and `assistant wake <name>` starts it by hand, before `assistant attach <name>` say. Without the setting nobody is put to sleep.
+The router reads it within a minute, with no restart; take it out to turn this off again (anyone asleep then wakes with their next message, as before). An assistant that has been idle that long has its whole tmux session ended, and the person's next message starts it again with its conversation: that first answer takes some seconds longer, with "typing…" showing meanwhile, and their session-only `/model` and `/effort` are put back first. An assistant stays up while it works, while a command or a program it listed with `assistant background` runs, and while it has something scheduled inside Claude Code (CronCreate, `/loop`), which only a running session carries out; scheduled jobs in the crontab never need the session. `assistant status`, `assistant health`, `/usage` and the control panel show such an assistant as asleep, the health alerts don't count it as missing, and `assistant wake <name>` starts it by hand, before `assistant attach <name>` say.
 
 ## Add-ins
 

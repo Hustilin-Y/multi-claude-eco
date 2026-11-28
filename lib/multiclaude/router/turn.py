@@ -20,6 +20,8 @@ LASTING_ERRORS = {"authentication_failed", "billing_error", "invalid_request", "
 # The tools that schedule something inside Claude Code (CronCreate, and /loop's own wake-ups),
 # which only that claude process carries out.
 SCHEDULING_TOOLS = ("CronCreate", "ScheduleWakeup")
+# Calls to them from code, as Code Mode makes them inside its REPL tool (tools.CronCreate({...})).
+SCHEDULING_CALL_RE = re.compile(rf"\b(?:{'|'.join(SCHEDULING_TOOLS)})\s*\(")
 
 
 @dataclass
@@ -152,9 +154,10 @@ class Turn:
         for block in content:
             if not isinstance(block, dict) or block.get("type") != "tool_use":
                 continue
-            if REPLY_RE.search(json.dumps(block.get("input") or {})):
+            tool_input = json.dumps(block.get("input") or {})
+            if REPLY_RE.search(tool_input):
                 self.last_reply = time.time()
-            if block.get("name") in SCHEDULING_TOOLS:
+            if block.get("name") in SCHEDULING_TOOLS or SCHEDULING_CALL_RE.search(tool_input):
                 self.scheduled = written_at(entry)
 
     def settle(self, now):

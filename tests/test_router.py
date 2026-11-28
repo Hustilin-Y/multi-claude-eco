@@ -1830,16 +1830,38 @@ def test_something_scheduled_before_claude_last_started_went_with_that_process(r
     assert alice.can_hibernate(time.time(), alice.claude_proc(), 1800)
 
 
-def test_what_an_assistant_schedules_inside_claude_code_is_remembered_beyond_a_router_restart(r, desk):
+CRON_CREATE = {"type": "tool_use", "name": "CronCreate", "input": {"cron": "*/5 * * * *", "prompt": "check the build"}}
+
+
+def code_mode(code):
+    """A tool call under Code Mode: a script for its REPL tool, which calls the tools."""
+    return {"type": "tool_use", "name": "REPL", "input": {"code": code, "description": "Check the build"}}
+
+
+@pytest.mark.parametrize("call", [
+    CRON_CREATE,
+    code_mode("const job = await tools.CronCreate({cron: '*/5 * * * *', prompt: 'check the build'});\njob"),
+    code_mode("await tools.ScheduleWakeup({delaySeconds: 600, prompt: '/loop check the build'})"),
+], ids=["CronCreate", "Code Mode CronCreate", "Code Mode ScheduleWakeup"])
+def test_what_an_assistant_schedules_inside_claude_code_is_remembered_beyond_a_router_restart(r, desk, call):
     alice = desk.users["alice"]
-    append(transcript(alice), {"type": "assistant", "timestamp": "2026-11-09T10:00:00.000Z", "message": {"content": [
-        {"type": "tool_use", "name": "CronCreate", "input": {"cron": "*/5 * * * *", "prompt": "check the build"}}]}})
+    append(transcript(alice), {"type": "assistant", "timestamp": "2026-11-09T10:00:00.000Z", "message": {"content": [call]}})
 
     alice.read(time.time())
 
     at = 1794218400.0  # 2026-11-09 10:00 UTC
     assert alice.scheduled == at
     assert r.session.Session("alice", "u-alice", alice.tail.dir, ALICE_CHAT, "Alice").scheduled == at
+
+
+def test_a_script_that_only_names_a_scheduling_tool_schedules_nothing(r, desk):
+    alice = desk.users["alice"]
+    append(transcript(alice), {"type": "assistant", "message": {"content": [
+        code_mode("await tools.Bash({command: 'grep -c CronCreate ARCHITECTURE.md'})")]}})
+
+    alice.read(time.time())
+
+    assert alice.scheduled == 0
 
 
 def test_an_assistant_that_got_busy_meanwhile_is_not_put_to_sleep(r, desk, monkeypatch):
@@ -1865,7 +1887,7 @@ def test_a_message_wakes_a_sleeping_assistant_and_is_typed_once_its_switches_are
 
     desk.inbound(channel("good morning"))
     assert kinds(alice) == ["Deliver"] and alice.turn.busy  # "typing…" shows while it wakes
-    desk.workers["alice"].step(time.time())
+    desk.workers["alice"].step(time.time() + r.work.GATHER)
 
     assert commands == [["assistant", "wake", "alice"]] and not alice.asleep()
     assert done == ["/model sonnet", "good morning"] and alice.queue == []
