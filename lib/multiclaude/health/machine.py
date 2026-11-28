@@ -19,7 +19,7 @@ NAME_CUT = 15                                  # characters the kernel keeps of 
 TOP_SHOWN = 5                                  # programs listed as using the most memory
 DISK_FOLDERS = (Path("/"), paths.ROOT, paths.WORKSPACES)  # their file systems are watched, each once
 ROUTER_UNIT = "assistant-watcher"
-TELEGRAM_QUIET = 5 * 60  # a router polling Telegram itself saves its state every minute; older than this, it hears nothing
+TELEGRAM_QUIET = 5 * 60  # a router polling Telegram itself had no answer from it for this long: it hears nothing
 ROUTER_SCRIPT = paths.BIN / "watcher.py"
 SYSTEMCTL_TIMEOUT = 10
 PODMAN_TIMEOUT = 15
@@ -325,14 +325,13 @@ def router_running():
 
 
 def telegram_heard():
-    """Whether the router, when it polls Telegram itself ("frontdesk": "router"), had an answer
-    from it lately: it saves its state at least once a minute while it does
-    (router/telegram_entrance.py). None with a front desk, whose plugin does the polling."""
+    """Whether the router, when it polls Telegram itself ("frontdesk": "router"), had an answer from it lately, as
+    it saves at least once a minute (router/telegram_entrance.py). None with a front desk, whose plugin polls."""
     if config.frontdesk() != "router":
         return None
     kept = jsonfile.read_json(paths.STATE / "telegram-updates.json", {})
-    saved = kept.get("saved") if isinstance(kept, dict) else None
-    return isinstance(saved, (int, float)) and time.time() - saved < TELEGRAM_QUIET
+    heard = kept.get("heard") if isinstance(kept, dict) else None
+    return isinstance(heard, (int, float)) and time.time() - heard < TELEGRAM_QUIET
 
 
 def session(person, running):

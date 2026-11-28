@@ -400,8 +400,8 @@ cmd_status() {
   local pid name state saved
   echo "Service: $(systemctl is-active assistant 2>/dev/null || true)"
   if [ "$(frontdesk)" = router ]; then
-    # The router saves this at least once a minute while Telegram answers it.
-    saved=$(jq -r '.saved // empty | floor' "$ROOT/state/telegram-updates.json" 2>/dev/null || true)
+    # When Telegram last answered the router's polling, saved at least once a minute.
+    saved=$(jq -r '.heard // empty | floor' "$ROOT/state/telegram-updates.json" 2>/dev/null || true)
     if [ -n "$saved" ]; then echo "Telegram: polled by the router itself, no front desk; last heard from it $(( $(date +%s) - saved ))s ago"
     else echo "Telegram: polled by the router itself, no front desk; not heard from it yet"; fi
   else

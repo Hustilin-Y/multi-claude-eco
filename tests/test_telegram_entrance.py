@@ -46,6 +46,7 @@ def entrance(r, *updates):
     told = []
     found = r.entrance.TelegramEntrance(told.append)
     found.api, found.told = Polled([{"update_id": 100 + n, **update} for n, update in enumerate(updates)]), told
+    found.hold_lock()  # as its thread does first
     return found
 
 
@@ -361,8 +362,9 @@ def test_each_poll_asks_from_where_the_last_one_ended_and_a_restart_carries_on_t
     first, second = found.api.asked("getUpdates")
     assert (first["offset"], first["timeout"], second["offset"]) == (None, r.entrance.LONG_POLL, 102)
     assert "message_reaction" in first["allowed_updates"]  # Telegram sends reactions only to a poller that asks
-    assert read_json(r.entrance.STATE)["offset"] == 102
-    assert r.entrance.TelegramEntrance().offset == 102 and [m.text for m in found.waiting()] == ["one", "two"]
+    assert [m.text for m in found.waiting()] == ["one", "two"]
+    found.tick(time.time())
+    assert read_json(r.entrance.STATE)["offset"] == 102 and r.entrance.TelegramEntrance().offset == 102
     assert ("setMyCommands", {"commands": r.entrance.STRANGER_COMMANDS, "scope": {"type": "all_private_chats"}}) in r.api_calls
 
 
@@ -390,6 +392,42 @@ def test_after_a_long_outage_what_telegram_kept_is_skipped_rather_than_delivered
     assert [m.text for m in found.waiting()] == ["now"]
 
 
+def test_how_far_it_polled_is_saved_only_once_the_loop_has_taken_what_came(r):
+    allow(r, ALICE_CHAT)
+    found = entrance(r, {"message": message("one")})
+    found.poll()
+
+    found.tick(time.time())
+    assert r.entrance.TelegramEntrance().offset is None  # a restart now has Telegram send "one" again
+    assert [m.text for m in found.waiting()] == ["one"]
+    found.tick(time.time())
+    assert r.entrance.TelegramEntrance().offset == 101
+
+
+def test_a_router_up_through_a_long_outage_and_restarted_late_in_it_takes_what_telegram_kept(r, monkeypatch):
+    """Offline from 01:00 to 02:30, restarted at 02:00: down a moment, so what was sent from 01:00 on still comes."""
+    allow(r, ALICE_CHAT)
+    restart_at = time.time()
+    clock = [restart_at - r.entrance.RESUME_WITHIN - 60]
+    monkeypatch.setattr(r.entrance.time, "time", lambda: clock[0])
+    found = entrance(r, {"message": message("before the outage")})
+    found.poll()
+    found.waiting()
+    heard = found.heard
+    found.api.fail["getUpdates"] = r.telegram.Unreachable("getUpdates: no network")
+    while clock[0] < restart_at:
+        found.tick(clock[0])  # the loop runs on while getUpdates fails
+        clock[0] += 60
+
+    restarted = r.entrance.TelegramEntrance()
+    restarted.api = Polled([{"update_id": 101, "message": message("sent at 01:30")}])
+    restarted.poll()
+
+    assert not restarted.skip_kept and [m.text for m in restarted.waiting()] == ["sent at 01:30"]
+    assert [p["offset"] for p in restarted.api.asked("getUpdates")] == [101]
+    assert read_json(r.entrance.STATE)["heard"] == heard  # the health check still sees Telegram unheard since 01:00
+
+
 def test_a_short_restart_and_a_first_start_take_everything_telegram_kept(r):
     assert not r.entrance.TelegramEntrance().skip_kept  # nothing saved yet: a new install
     write_json(r.entrance.STATE, {"offset": 50, "saved": time.time() - 60})
@@ -405,6 +443,63 @@ def test_the_owner_is_told_once_when_something_else_polls_with_the_bots_token(r)
     found.failed(r.telegram.Unreachable("getUpdates: no network"), 1)
 
     assert len(found.told) == 1 and found.told[0].startswith("📡 Claude can't hear Telegram reliably")
+    assert "run `assistant install` and then `assistant restart`" in found.told[0]
+
+
+def test_the_owner_is_told_once_when_the_front_desks_plugin_still_polls_after_a_switch(r, monkeypatch, tmp_path):
+    """Switched to "frontdesk": "router" with only the router restarted: run.sh still runs the front desk."""
+    monkeypatch.setattr(r.paths, "PROC", tmp_path / "proc")
+    r.poller.pid_file().parent.mkdir(parents=True, exist_ok=True)
+    r.poller.pid_file().write_text("4321\n")
+    found, now = entrance(r), time.time()
+
+    found.tick(now)  # not at once: a front desk `assistant restart` stopped may still be going
+    found.tick(now + r.entrance.FRONT_DESK_EVERY)  # a pid file left behind names no poller
+    (tmp_path / "proc" / "4321").mkdir(parents=True)
+    (tmp_path / "proc" / "4321" / "cmdline").write_bytes(b"bun\0run\0/plugins/telegram/server.ts\0")
+    found.tick(now + r.entrance.FRONT_DESK_EVERY + 1)  # not looked at on every tick
+    assert found.told == []
+    found.tick(now + 2 * r.entrance.FRONT_DESK_EVERY)
+    found.tick(now + 3 * r.entrance.FRONT_DESK_EVERY)
+    found.failed(r.telegram.TelegramError("getUpdates: Conflict: terminated by other getUpdates request"), 1)
+
+    assert len(found.told) == 1 and "the front desk's Telegram plugin still polls it" in found.told[0]
+    assert "run `assistant install` and then `assistant restart`" in found.told[0]
+
+
+def test_the_polling_thread_is_started_again_when_it_stops_and_the_owner_hears_if_it_keeps_stopping(r, monkeypatch):
+    found, now = entrance(r), time.time()
+    monkeypatch.setattr(found, "hold_lock", lambda: 1 / 0)  # it stops as soon as it starts, every time
+    found.start(now)
+    found.thread.join(5)
+
+    found.tick(now + 1)  # not again at once
+    assert found.restarts == [] and not found.thread.is_alive()
+    for n in range(1, 5):
+        found.tick(now + n * r.entrance.THREAD_RETRY)
+        found.thread.join(5)
+
+    assert len(found.restarts) == 4
+    assert found.told == [r.entrance.DYING.format(times=r.entrance.TELL_DYING_AFTER)]  # once
+
+
+def test_a_router_waiting_for_another_routers_lock_leaves_the_state_to_it(r):
+    write_json(r.entrance.STATE, {"offset": 102, "saved": time.time(), "heard": time.time()})
+    waiting = r.entrance.TelegramEntrance()
+    waiting.taken = 50
+
+    waiting.tick(time.time() + r.entrance.HEARTBEAT)
+
+    assert read_json(r.entrance.STATE)["offset"] == 102
+
+
+def test_a_polling_thread_started_again_keeps_the_lock_it_holds(r):
+    found = entrance(r)
+    lock = found.lock
+
+    found.hold_lock()
+
+    assert found.lock is lock
 
 
 # --- the router without a front desk -------------------------------------------------------------

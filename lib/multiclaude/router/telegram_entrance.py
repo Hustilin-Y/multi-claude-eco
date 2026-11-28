@@ -6,11 +6,13 @@ pairing codes (access.py), answers /start and /status and a stranger's /help, fe
 and queues everything else for the loop as the Inbound the plugin would have passed on
 (updates.py). Telegram keeps what was sent while nothing polled, so a restart loses nothing.
 
-state/telegram-updates.json holds {"offset": the next update to ask for, "saved": when}, saved
-after each batch and at least once a minute, so a restart can tell how long the router was down.
-Only one program may poll a bot: the thread holds a lock (state/telegram-updates.lock) against a
-second router, `assistant install` turns the plugin off for the repo's folder, and when Telegram
-says another poller has the token anyway (409), the owner is told."""
+state/telegram-updates.json holds {"offset": the next update to ask for, "saved": when, "heard": when
+Telegram last answered}. The router's loop saves it once it has routed what came, and at least once a
+minute while it runs, network or not, so a restart can tell how long the router itself was down; it
+also starts the thread again should it stop. Only one program may poll a bot: the thread holds a lock
+(state/telegram-updates.lock) against a second router, `assistant install` turns the plugin off for the
+repo's folder, and when the plugin's poller runs anyway or Telegram says another poller has the token
+(409), the owner is told."""
 import fcntl
 import queue
 import re
@@ -20,17 +22,21 @@ import traceback
 
 from multiclaude import access, addons, bot, jsonfile, paths, telegram
 from multiclaude.log import log
-from multiclaude.router import updates
+from multiclaude.router import poller, updates
 
 STATE = paths.STATE / "telegram-updates.json"
 LOCK = paths.STATE / "telegram-updates.lock"
 INBOX = paths.TELEGRAM_DIR / "inbox"  # where photos are kept for the assistants, as the plugin keeps them
 LONG_POLL = 25            # seconds Telegram holds a getUpdates with nothing to give
 HEARTBEAT = 60            # the state is saved at least this often
-RESUME_WITHIN = 60 * 60   # after a longer outage, what was sent meanwhile is skipped rather than delivered late
+RESUME_WITHIN = 60 * 60   # after the router was down longer, what was sent meanwhile is skipped rather than delivered late
 RETRY_FIRST, RETRY_MAX = 1, 15  # seconds between attempts while Telegram can't be polled, growing
 LOCK_RETRY = 30
 APPROVALS_EVERY = 2       # how often to look for people `assistant pair` approved
+FRONT_DESK_EVERY = 60     # how often to look for the front desk's plugin still polling
+THREAD_RETRY = 30         # at least this long between starts of the polling thread
+TELL_DYING_AFTER = 3      # starts again within DYING_WITHIN before the owner hears that it keeps stopping
+DYING_WITHIN = 60 * 60
 DOWNLOAD_TIMEOUT = 60
 # What the thread asks Telegram for. Reactions come only to a poller that asks for them, and
 # edited messages carry a live location's updates (the locations add-in).
@@ -50,37 +56,70 @@ PAIR = "{lead}. The owner of the machine runs:\n\nassistant pair {code}"
 NOT_PAIRED = "Not paired. Send me a message to get a pairing code."
 CONFLICT = ("📡 {bot} can't hear Telegram reliably: another program is polling with its bot token, and each "
             "message reaches only one of them. With `\"frontdesk\": \"router\"` in `config.json` only the router "
-            "may. If the front desk's Telegram plugin still runs, `assistant install` and then `assistant restart` "
-            "turn it off.")
+            "may. If the front desk's Telegram plugin still runs, run `assistant install` and then `assistant restart` "
+            "to turn it off.")
+FRONT_DESK_POLLS = ("📡 {bot} can't hear Telegram reliably: the front desk's Telegram plugin still polls it, as the router "
+                    "does with `\"frontdesk\": \"router\"` in `config.json`, and each message reaches only one of them. "
+                    "Restarting the router alone doesn't stop the front desk: run `assistant install` and then "
+                    "`assistant restart` to finish the switch.")
+DYING = ("📡 The router's polling of Telegram keeps stopping: it started it again {times} times in the last hour, so "
+         "messages may come late. See why with `journalctl -u assistant-watcher -n 100`.")
 
 
 def saved_state():
-    """(the next update to ask for or None, when the state was last saved or None)."""
+    """(the next update to ask for, when the router saved it, when Telegram last answered), None for each unknown."""
     kept = jsonfile.read_json(STATE, {})
     kept = kept if isinstance(kept, dict) else {}
-    offset, saved = kept.get("offset"), kept.get("saved")
-    return (offset if isinstance(offset, int) else None), (saved if isinstance(saved, (int, float)) else None)
+    offset = kept.get("offset")
+    saved, heard = (kept[key] if isinstance(kept.get(key), (int, float)) else None for key in ("saved", "heard"))
+    return (offset if isinstance(offset, int) else None), saved, heard
 
 
-class TelegramEntrance(threading.Thread):
+def plugin_polling():
+    """Whether the Telegram plugin's poller runs: its pid file names a live server.ts."""
+    try:
+        pid = int(poller.pid_file().read_text().strip())
+        return b"server.ts" in (paths.PROC / str(pid) / "cmdline").read_bytes()
+    except (OSError, ValueError):
+        return False
+
+
+class TelegramEntrance:
     def __init__(self, tell_owner=lambda text: None):
-        super().__init__(name="telegram-entrance", daemon=True)
-        self.inbox = queue.Queue()  # router.inbound.Inbound, for the loop to route
+        self.inbox = queue.Queue()  # router.inbound.Inbound for the loop to route, and after each batch the offset it reached
         self.tell_owner = tell_owner
         self.api = telegram.BotApi(timeout=LONG_POLL + 15)  # its own client: a long poll outlasts the router's timeouts
         self.username = None        # the bot's, to tell its own commands and mentions
-        self.offset, saved = saved_state()
-        # After a long outage what Telegram kept meanwhile is skipped. A first start has nothing saved and takes it all.
+        self.offset, saved, heard = saved_state()
+        # After the router was down long, what Telegram kept is skipped. A first start has nothing saved and takes it all.
         self.skip_kept = saved is not None and time.time() - saved > RESUME_WITHIN
+        self.taken = self.offset    # how far the loop has taken what came, saved once it has routed that
+        self.heard = heard or 0.0   # when Telegram last answered a getUpdates
         self.saved = (self.offset, 0.0)  # what was last written to STATE, and when
         self.conflict_told = False
         self.next_approvals = 0.0
+        self.next_front_desk = time.time() + FRONT_DESK_EVERY  # a front desk stopped by `assistant restart` may take a moment
         self.lock = None
+        self.thread = None
+        self.started = 0.0
+        self.restarts = []          # when the thread was started again, within DYING_WITHIN
+        self.dying_told = False
 
     # --- the thread ---
 
+    def start(self, now=None):
+        self.thread = threading.Thread(target=self.run, name="telegram-entrance", daemon=True)
+        self.started = time.time() if now is None else now
+        self.thread.start()
+
     def run(self):
-        self.hold_lock()
+        try:
+            self.hold_lock()
+            self.poll_on()
+        except Exception:
+            log(f"polling Telegram stopped:\n{traceback.format_exc().rstrip()}")  # the loop starts it again (keep_polling)
+
+    def poll_on(self):
         wait = RETRY_FIRST
         while True:
             try:
@@ -96,11 +135,14 @@ class TelegramEntrance(threading.Thread):
 
     def hold_lock(self):
         """One router polls at a time: wait for the lock a router still running holds."""
+        if self.lock:
+            return  # the thread started again: this router has it already
         paths.STATE.mkdir(parents=True, exist_ok=True)
-        self.lock = open(LOCK, "w")
+        lock = open(LOCK, "w")
         while True:
             try:
-                fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self.lock = lock
                 return
             except OSError:
                 log("another router is polling Telegram; waiting for it to stop")
@@ -116,19 +158,21 @@ class TelegramEntrance(threading.Thread):
             log(f"{error}; trying again in {wait}s")  # an outage is said once: the network check reports it
 
     def poll(self):
-        """One getUpdates: take what came, then save how far that was."""
+        """One getUpdates: queue what came for the loop, then how far that was."""
         if self.username is None:
             self.introduce()
         if self.skip_kept:
             self.skip()
         found = self.api.call("getUpdates", offset=self.offset, timeout=LONG_POLL, allowed_updates=ALLOWED_UPDATES)
+        self.heard = time.time()
         for update in found or []:
             try:
                 self.take(update)
             except Exception:
                 log(f"taking update {update.get('update_id')} failed:\n{traceback.format_exc().rstrip()}")
             self.offset = update["update_id"] + 1
-        self.save(time.time())
+        if self.offset is not None:
+            self.inbox.put(self.offset)
 
     def introduce(self):
         """Learn the bot's own username, and give the chats of strangers their short menu."""
@@ -141,19 +185,20 @@ class TelegramEntrance(threading.Thread):
         last = self.api.call("getUpdates", offset=-1, timeout=0, allowed_updates=ALLOWED_UPDATES)
         if last:
             self.offset = last[-1]["update_id"] + 1
+            self.inbox.put(self.offset)
         self.skip_kept = False
         log("the router was down too long; messages sent meanwhile are skipped")
 
     def save(self, now):
         offset, at = self.saved
-        if self.offset == offset and now - at < HEARTBEAT:
-            return
+        if not self.lock or (self.taken == offset and now - at < HEARTBEAT):
+            return  # a router waiting for another's lock leaves the state to that one
         try:
-            jsonfile.write_json(STATE, {"offset": self.offset, "saved": now})
+            jsonfile.write_json(STATE, {"offset": self.taken, "saved": now, "heard": self.heard})
         except OSError as e:
             log(f"can't save {STATE}: {e}")
             return
-        self.saved = (self.offset, now)
+        self.saved = (self.taken, now)
 
     # --- what came ---
 
@@ -283,14 +328,44 @@ class TelegramEntrance(threading.Thread):
         found = []
         while True:
             try:
-                found.append(self.inbox.get_nowait())
+                item = self.inbox.get_nowait()
             except queue.Empty:
                 return found
+            if isinstance(item, int):
+                self.taken = item
+            else:
+                found.append(item)
 
     def tick(self, now):
-        """Tell the people `assistant pair` approved since the last look that they're paired."""
+        """Once the loop has routed what waiting() gave: keep the thread polling, save how far that was, watch for
+        the front desk's plugin, and tell the people `assistant pair` approved that they're paired."""
+        self.keep_polling(now)
+        self.save(now)
+        self.watch_front_desk(now)
         if now < self.next_approvals:
             return
         self.next_approvals = now + APPROVALS_EVERY
         for sender in access.take_approved():
             telegram.later(telegram.api, "sendMessage", chat_id=sender, text=f"Paired! Say hi to {bot.name()}.")
+
+    def keep_polling(self, now):
+        """Start the thread again if it stopped, and tell the owner once if it keeps stopping."""
+        if self.thread is None or self.thread.is_alive() or now - self.started < THREAD_RETRY:
+            return
+        self.restarts = [at for at in self.restarts if now - at < DYING_WITHIN] + [now]
+        log("the thread polling Telegram stopped; starting it again")
+        if len(self.restarts) >= TELL_DYING_AFTER and not self.dying_told:
+            self.dying_told = True
+            self.tell_owner(DYING.format(times=len(self.restarts)))
+        self.start(now)
+
+    def watch_front_desk(self, now):
+        """Tell the owner once if the front desk's plugin still polls: switching to the router and restarting
+        only the router leaves it running."""
+        if self.conflict_told or now < self.next_front_desk:
+            return
+        self.next_front_desk = now + FRONT_DESK_EVERY
+        if plugin_polling():
+            self.conflict_told = True
+            log("the front desk's Telegram plugin still polls Telegram")
+            self.tell_owner(FRONT_DESK_POLLS.format(bot=bot.name()))

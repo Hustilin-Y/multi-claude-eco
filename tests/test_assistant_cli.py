@@ -507,7 +507,7 @@ def test_status_without_a_front_desk_says_how_long_ago_the_router_heard_from_tel
     no_front_desk(home)
     before = home.run("status").stdout
     (home.root / "state").mkdir(exist_ok=True)
-    (home.root / "state" / "telegram-updates.json").write_text(json.dumps({"offset": 7, "saved": time.time() - 30}))
+    (home.root / "state" / "telegram-updates.json").write_text(json.dumps({"offset": 7, "saved": time.time(), "heard": time.time() - 30}))
 
     out = home.run("status").stdout
 

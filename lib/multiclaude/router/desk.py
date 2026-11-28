@@ -153,9 +153,9 @@ class Desk:
             for entry in self.desk.read(now):
                 survive("routing a message", self.inbound, entry)
         else:
-            self.telegram_in.tick(now)
             for msg in self.telegram_in.waiting():
                 survive("routing a message", self.route, msg)
+            self.telegram_in.tick(now)
         for envelope in self.relay.waiting() if self.relay else []:
             survive("routing from the relay", self.relay_inbound, envelope)
         survive("taking reload requests", plugins.take_reload_requests, self.users, now)

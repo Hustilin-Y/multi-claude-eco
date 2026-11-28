@@ -24,7 +24,7 @@ It doesn't stop an assistant set on forging one. Assistants are full admins unde
 
 - read a service's token from the service's settings, and call the API as the service;
 - write a press into `state/service-notify/<service>/presses.jsonl`, or change a kept message's service or buttons in `state/asks/`;
-- write a tap into the front desk session's transcript, which each tap reaches first and the router reads it from;
+- write a tap into the front desk session's transcript, which each tap reaches first and the router reads it from (unless the router polls Telegram itself);
 - use the bot's own token (in the Telegram plugin's `.env`) to relabel a message's buttons, so the owner taps what reads "Cancel" and the service gets "Print";
 - run `assistant service key <service> --replace` and take the service's presses for itself. The assistants' rules forbid them that command, and `key` never replaces a token silently.
 

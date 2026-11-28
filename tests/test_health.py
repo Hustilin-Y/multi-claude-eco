@@ -304,9 +304,9 @@ def test_only_a_router_that_polls_telegram_itself_is_watched_for_it(health):
     assert health.machine.telegram_heard() is None  # with a front desk, its plugin polls
     write_json(health.paths.CONFIG, {"frontdesk": "router"})
     assert health.machine.telegram_heard() is False
-    write_json(state, {"offset": 7, "saved": time.time() - 30})
+    write_json(state, {"offset": 7, "saved": time.time(), "heard": time.time() - 30})
     assert health.machine.telegram_heard() is True
-    write_json(state, {"offset": 7, "saved": time.time() - health.machine.TELEGRAM_QUIET - 1})
+    write_json(state, {"offset": 7, "saved": time.time(), "heard": time.time() - health.machine.TELEGRAM_QUIET - 1})
     assert health.machine.telegram_heard() is False
     assert "  Telegram                heard by the router" in health.status.machine_lines({**a_sample(), "telegram": True})
     assert not any("Telegram" in line for line in health.status.machine_lines(a_sample()))
