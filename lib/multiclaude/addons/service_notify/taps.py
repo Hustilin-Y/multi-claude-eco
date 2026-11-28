@@ -63,9 +63,9 @@ def press_for(user, tap, chat, msg_id, now):
     service = kept.get("service")
     buttons = [b for row in kept.get("buttons") or [] for b in row]
     data = tap.attrs.get("callback_data") or ""
-    n = int(data[4:]) if data.startswith("ask:") and data[4:].isdigit() else -1
-    if not 0 <= n < len(buttons):
-        log(f"{user.name}: tap {data!r} on {service}'s message {msg_id} matches no button; ignored")
+    n = messages.tapped_button(data, kept.get("gen", 0))
+    if n is None or not 0 <= n < len(buttons):
+        log(f"{user.name}: tap {data!r} on {service}'s message {msg_id} matches no button it has now; ignored")
         return None
     once = kept.get("once", True)
     if kept.get("answer") is not None and (once or kept.get("answer") == "expired"):
@@ -130,7 +130,7 @@ def sweep(now):
                 try:
                     messages.call("editMessageText", chat_id=chat, message_id=msg_id,
                                   rich_message=messages.shown(kept, MISSED.format(service=service)),
-                                  reply_markup=messages.keyboard(rows))
+                                  reply_markup=messages.keyboard(rows, kept.get("gen", 0)))
                 except messages.Refused as e:
                     log(f"service {service}: can't tell the owner a press on message {msg_id} was dropped: {e}")
 

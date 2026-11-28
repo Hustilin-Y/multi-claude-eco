@@ -135,13 +135,28 @@ def rich(text, media):
                                      if media else {})}
 
 
-def keyboard(rows):
-    """Telegram's inline keyboard: each button "ask:<n>", numbered across the rows."""
+GENERATION = 100  # ask:<gen * GENERATION + n>: a set of buttons put on later is told apart (MAX_BUTTONS < it)
+
+
+def keyboard(rows, gen=0):
+    """Telegram's inline keyboard: each button "ask:<gen * 100 + n>", n numbered across the rows.
+    gen counts the sets of buttons a message was given, so a tap on a set replaced meanwhile (one
+    the owner saw before an edit) is told from a tap on the new one at the same place."""
     numbered, n = [], 0
     for row in rows:
-        numbered.append([{"text": b["text"], "callback_data": f"ask:{n + i}"} for i, b in enumerate(row)])
+        numbered.append([{"text": b["text"], "callback_data": f"ask:{gen * GENERATION + n + i}"}
+                         for i, b in enumerate(row)])
         n += len(row)
     return {"inline_keyboard": numbered}
+
+
+def tapped_button(data, gen):
+    """The button number a tap's callback data names in buttons set gen, or None."""
+    value = data[4:] if data.startswith("ask:") else ""
+    if not value.isdigit():
+        return None
+    tap_gen, n = divmod(int(value), GENERATION)
+    return n if tap_gen == gen else None
 
 
 def file_ids(result, kinds):
@@ -190,11 +205,12 @@ def read_kept(chat, msg_id):
     return kept if isinstance(kept, dict) and kept.get("kind") == KIND else None
 
 
-def keep(chat, msg_id, service, text, rows, once, expires, media, answer=None):
-    """Keep a message as a question of kind "service" (answer: what was pressed, or why it's over)."""
+def keep(chat, msg_id, service, text, rows, once, expires, media, answer=None, gen=0):
+    """Keep a message as a question of kind "service" (answer: what was pressed, or why it's over;
+    gen: which set of buttons it has, see keyboard)."""
     questions.save(paths.ASKS / str(chat), msg_id, text, [b["text"] for row in rows for b in row], kind=KIND,
                    service=service, chat=str(chat), buttons=rows, once=once, expires=expires, media=media,
-                   **({"answer": answer} if answer is not None else {}))
+                   gen=gen, **({"answer": answer} if answer is not None else {}))
     if rows:
         store.live_add(chat, msg_id, expires)
     else:
@@ -306,9 +322,9 @@ def edit(service, msg_id, request, now):
         text = check_text(request["text"]) if request.get("text") is not None else kept.get("question")
         if not text:
             raise bad("text must be non-empty text")
-        answer = kept.get("answer")
-        if request.get("buttons"):  # new buttons: pressable again
-            rows, answer = check_buttons(request["buttons"]), None
+        answer, gen = kept.get("answer"), kept.get("gen", 0)
+        if request.get("buttons"):  # new buttons: pressable again, as a new set
+            rows, answer, gen = check_buttons(request["buttons"]), None, gen + 1
         elif "buttons" in request or answer is not None:  # taken off, or already pressed
             rows = []
         else:
@@ -320,8 +336,8 @@ def edit(service, msg_id, request, now):
         once = check_switch(request, "once")
         once = kept.get("once", True) if once is None else once
         call("editMessageText", chat_id=chat, message_id=msg_id, rich_message=shown({**kept, "question": text}),
-             reply_markup=keyboard(rows))
-        keep(chat, msg_id, service, text, rows, once, expires, kept.get("media") or [], answer)
+             reply_markup=keyboard(rows, gen))
+        keep(chat, msg_id, service, text, rows, once, expires, kept.get("media") or [], answer, gen)
     return {"message_id": msg_id}
 
 

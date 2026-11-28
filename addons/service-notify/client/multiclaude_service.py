@@ -34,6 +34,11 @@ class ServiceError(Exception):
         self.status, self.code, self.detail, self.retry_after = status, code, detail, retry_after
 
 
+# The API is on this machine: never through an HTTP proxy from the environment, which would get
+# the bearer token and every message.
+_DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
 class Service:
     def __init__(self, url, token, timeout=35, retries=5, sleep=time.sleep):
         self.url, self.token, self.timeout, self.retries, self.sleep = url.rstrip("/"), token, timeout, retries, sleep
@@ -96,7 +101,7 @@ class Service:
         waited_for_limit = False
         for attempt in range(self.retries + 1):
             try:
-                with urllib.request.urlopen(request, timeout=timeout or self.timeout) as response:
+                with _DIRECT.open(request, timeout=timeout or self.timeout) as response:
                     return json.loads(response.read())
             except urllib.error.HTTPError as e:
                 error = refusal(e)

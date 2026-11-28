@@ -13,9 +13,20 @@ from multiclaude.log import log  # noqa: E402
 
 
 def main():
+    """Runs beside the router, which still serves presses until it restarts: a message's waiting
+    presses are dropped before it says nothing was done, and one already pressed keeps its text
+    (the service may have said what it did) and only loses its buttons."""
     for chat, msg_id in store.live_all():
         try:
-            messages.take_buttons_off(chat, msg_id, taps.EXPIRED)
+            kept = messages.read_kept(chat, msg_id)
+            answered = kept is not None and kept.get("answer") is not None
+            if kept and not answered:
+                store.Service(kept.get("service")).drop_presses_for(chat, msg_id)
+                taps.mark(chat, msg_id, kept, "expired")
+            if answered:
+                messages.take_keyboard_off(chat, msg_id)
+            else:
+                messages.take_buttons_off(chat, msg_id, taps.EXPIRED)
         except Exception as e:
             log(f"service-notify teardown: message {msg_id}: {e!r}")
             store.live_remove(chat, msg_id)

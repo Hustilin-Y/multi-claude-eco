@@ -3,6 +3,7 @@ the presses waiting for it, the messages it sent and its dedupe keys; and, for e
 messages whose buttons still work and when they expire. Everything is read and written under a
 lock, since the HTTP API's threads and the router's loop both use it."""
 import json
+import os
 import re
 
 from multiclaude import jsonfile, keyring, paths
@@ -15,6 +16,12 @@ LIVE_LOCK = ROOT / "live.lock"
 SENT_FOR = 30 * 86400    # how long a service may edit or delete what it sent
 DEDUPE_FOR = 7 * 86400   # how long a dedupe key stands
 STALE_AFTER = 120        # a press not handed over by then is dropped
+
+
+def private_root():
+    """state/service-notify readable by its user only: presses carry the services' button ids."""
+    ROOT.mkdir(parents=True, exist_ok=True)
+    os.chmod(ROOT, 0o700)
 
 
 def new_key(name):
@@ -45,6 +52,7 @@ class Service:
         if not NAME_RE.fullmatch(name or ""):
             raise ValueError(f"not a service name: {name!r}")
         self.name = name
+        private_root()
         self.dir = ROOT / name
         self.lock = self.dir / "presses.lock"
         self.presses = self.dir / "presses.jsonl"
