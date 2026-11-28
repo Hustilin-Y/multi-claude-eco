@@ -202,7 +202,7 @@ install_health_samples() {
 add_cron_line() {
   local purpose=$1 schedule=$2 command="$ROOT/bin/assistant $3" log="$ROOT/logs/$4"
   crontab -l 2>/dev/null | grep -qF "$command" && return
-  { crontab -l 2>/dev/null || true; echo "# assistant: $purpose"; echo "$schedule $command >> $log 2>&1"; } | crontab -
+  cmd_cron add --user assistant "$purpose" "$schedule $command >> $log 2>&1"
 }
 
 cmd_setup() {
@@ -577,6 +577,19 @@ cmd_background() {
   python3 -I "$ROOT/bin/background.py" "$user" "$1" "$2"
 }
 
+# Every change to the shared crontab goes through cron.py, which edits only that person's lines
+# (or the bot's own, as "assistant"), one edit at a time, and keeps the crontab as it was.
+cmd_cron() {
+  local command=${1:-} user=${ASSISTANT_USER:-}
+  shift || true
+  if [ "${1:-}" = "--user" ]; then user=${2:-}; shift 2; fi
+  [ -n "$user" ] || user=$(owner_name)
+  case "$command" in
+    add|remove) python3 -I "$ROOT/bin/cron.py" "$command" "$user" "$@" ;;
+    *) die 'usage: assistant cron add [--user <name>] "<purpose>" "<cron line>"... | assistant cron remove [--user <name>] "<text>"' ;;
+  esac
+}
+
 # The relay (relay/): a Cloudflare Worker that serves the control panel's page, holds its taps while
 # the machine is offline, and takes in what the add-ins that are on bring (their routes in
 # relay/src). Deploy it with the token in state/cloudflare.json, set its secrets, have each add-in
@@ -805,6 +818,15 @@ assistant background [--user <name>] <pid> "<what>"
                                 (default: the assistant running it), so their /stop ends it too
 assistant notify [--user <name>] "<msg>"
                                 Send a Telegram message to one user (default: the owner)
+assistant cron add [--user <name>] "<purpose>" "<cron line>"...
+                                Add a job of that user's (default: the assistant running it,
+                                else the owner) to the shared crontab, under its
+                                "# <name>: <purpose>" comment
+assistant cron remove [--user <name>] "<text>"
+                                Remove the one job of that user's whose comment or lines hold
+                                the text, comment and all (a one-off's last command); both
+                                touch no one else's lines and keep the crontab as it was in
+                                state/crontab/
 assistant shared sync [--dry-run] [--wait]
                                 Move plugins, skills and marketplaces that every user has
                                 into ~/.claude, and back out when someone turns one off or
@@ -840,6 +862,7 @@ case "${1:-help}" in
   notify)  shift; cmd_notify "$@" ;;
   reload-plugins) shift; cmd_reload_plugins "$@" ;;
   background) shift; cmd_background "$@" ;;
+  cron)    shift; cmd_cron "$@" ;;
   shared)  shift; exec python3 -I "$ROOT/bin/shared.py" "$@" ;;
   health)  shift; exec python3 -I "$ROOT/bin/health.py" "$@" ;;
   relay)   shift; cmd_relay "$@" ;;

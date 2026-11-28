@@ -16,4 +16,4 @@ if [ ! -s "$BACKUP_PASSWORD" ]; then
 fi
 on_repository cat config >/dev/null 2>&1 || on_repository init || fail "can't open or start the repository"
 crontab -l 2>/dev/null | grep -qF "$BACKUP_COMMAND" ||
-  { crontab -l 2>/dev/null || true; echo "$BACKUP_CRON_COMMENT"; echo "$BACKUP_CRON_LINE"; } | crontab -
+  "$ROOT/bin/assistant" cron add --user assistant "$BACKUP_CRON_PURPOSE" "$BACKUP_CRON_LINE"

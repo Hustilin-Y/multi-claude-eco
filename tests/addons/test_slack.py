@@ -327,7 +327,7 @@ def test_help_on_slack_lists_what_slack_takes_and_is_answered_there(r, slack_des
 
 def busy(desk, name="alice"):
     user = desk.users[name]
-    user.turn.expect(time.time())
+    user.turn.delivered(time.time())
     return user
 
 

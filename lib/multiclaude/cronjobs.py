@@ -2,13 +2,18 @@
 `# <name>: <purpose>` comment (~/workspaces/.claude/CLAUDE.md, "Scheduled and recurring work").
 The control panel (router/panel.py) lists them with their next run, and pauses and resumes them.
 A paused job's lines stay in the crontab commented out behind PAUSED, so resuming puts them back
-exactly as they were."""
+exactly as they were.
+
+Every change to the crontab goes through edit(): `assistant cron add` and `remove` (bin/cron.py),
+the panel's pause and resume, and the bot's own lines. One at a time, it changes only the lines of
+the person it is for and keeps a copy of the crontab as it was, since `crontab -` given the wrong
+input replaces everyone's jobs."""
 import hashlib
 import re
 import shlex
 import subprocess
 from dataclasses import dataclass
-from datetime import timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from itertools import takewhile
 from pathlib import PurePath
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -19,7 +24,11 @@ PAUSED = "#⏸ "
 JOB_OPTIONS = ("--user", "--tools", "--deny", "--model")  # `assistant job`'s options, each followed by its value
 SHELL_OPERATOR_RE = re.compile(r"[();<>|&]+")  # ends a shell command's words: ";", "&&", "|", ">>"…
 UNESCAPED_PERCENT_RE = re.compile(r"(?<!\\)%")
-CRONTAB_LOCK = paths.STATE / "crontab.lock"  # the router's own crontab edits, one at a time
+CRONTAB_LOCK = paths.STATE / "crontab.lock"  # every edit through edit(), one at a time
+CRONTAB_COPIES = paths.STATE / "crontab"  # the crontab before each edit
+KEPT_COPIES = 50
+BOT_LINES = "assistant"  # the name in the comments of the bot's own lines: "# assistant: …"
+NO_CRONTAB = "no crontab for"  # crontab -l's answer when there is none yet
 LOOK_AHEAD_DAYS = 400  # a job that runs less often than this shows no next run
 NICKNAMES = {"@yearly": "0 0 1 1 *", "@annually": "0 0 1 1 *", "@monthly": "0 0 1 * *", "@weekly": "0 0 * * 0",
              "@daily": "0 0 * * *", "@midnight": "0 0 * * *", "@hourly": "0 * * * *"}
@@ -30,6 +39,10 @@ WEEKDAYS = "sun mon tue wed thu fri sat".split()
 HOUR_CHECK_RE = re.compile(r'\[ "\$\(TZ=(?P<zone>[\w/+-]+) date \+\\?%H\)" = (?P<hour>\d\d) \]')
 TITLE_END_RE = re.compile(r"\. |: ")
 SEE_ALSO_RE = re.compile(r"\s*\(see [^)]*\)\s*$")
+
+
+class CrontabError(Exception):
+    """A crontab that can't be read, or an edit that must not be made."""
 
 
 @dataclass(frozen=True)
@@ -220,24 +233,102 @@ def jobs(name, crontab):
     return [Job(purpose, tuple(lines[i] for i in indexes)) for purpose, indexes in groups(name, lines)]
 
 
+def jobs_now(name):
+    """name's jobs in the crontab as it is now, none when it can't be read."""
+    try:
+        return jobs(name, read_crontab())
+    except CrontabError:
+        return []
+
+
 def set_paused(name, wanted, paused):
     """Pause or resume one of name's jobs. False if it isn't there any more."""
-    with jsonfile.locked(CRONTAB_LOCK):
-        lines = read_crontab().splitlines()
+    def mark(lines):
         found = next((indexes for purpose, indexes in groups(name, lines) if job_id(purpose) == wanted), None)
         if found is None:
-            return False
+            return None
+        marked = list(lines)
         for i in found:
             line = lines[i].removeprefix(PAUSED)
-            lines[i] = PAUSED + line if paused else line
-        write_crontab("\n".join(lines) + "\n")
+            marked[i] = PAUSED + line if paused else line
+        return marked
+    return edit(name, mark)
+
+
+def add_job(name, purpose, lines):
+    """Add a job of name's at the crontab's end: its `# <name>: <purpose>` comment, then its lines."""
+    check_job(purpose, lines)
+
+    def append(old):
+        if any(existing == purpose for existing, _ in groups(name, old)):
+            raise CrontabError(f"{name} already has the job {purpose!r}: remove it first to change it")
+        return [*old, f"# {name}: {purpose}", *lines]
+    edit(name, append)
+
+
+def check_job(purpose, lines):
+    if not purpose.strip() or "\n" in purpose:
+        raise CrontabError("a job's purpose is one line of text")
+    if not lines or any(not line.strip() or "\n" in line or line.startswith("#") for line in lines):
+        raise CrontabError("a job's lines are cron lines, one each, none blank or a comment")
+
+
+def remove_job(name, text):
+    """Remove the one job of name's whose comment or lines hold text, comment and all, as a one-off's
+    own line does once it has run. False if none does."""
+    def drop(lines):
+        matching = [indexes for purpose, indexes in groups(name, lines)
+                    if text in purpose or any(text in lines[i] for i in indexes)]
+        if len(matching) > 1:
+            raise CrontabError(f"{len(matching)} of {name}'s jobs hold {text!r}: give text only one holds")
+        if not matching:
+            return None
+        comment, last = matching[0][0] - 1, matching[0][-1]  # a job's lines follow its comment (groups)
+        return lines[:comment] + lines[last + 1:]
+    return edit(name, drop)
+
+
+def edit(name, change):
+    """Change the crontab with change(its lines), which gives the new lines, or None to leave it. One
+    edit at a time; it refuses one that would touch a line that isn't name's, and keeps the crontab as
+    it was in CRONTAB_COPIES. False when nothing changed."""
+    with jsonfile.locked(CRONTAB_LOCK):
+        old = read_crontab().splitlines()
+        new = change(old)
+        if new is None:
+            return False
+        if others_lines(name, new) != others_lines(name, old):
+            raise CrontabError(f"refused: that would change lines that aren't {name}'s")
+        keep_copy(old)
+        write_crontab("\n".join(new) + "\n")
         return True
 
 
+def others_lines(name, lines):
+    """The crontab's lines that aren't name's comments or their jobs' lines, blank lines left out."""
+    marker = f"# {name}:"
+    own = {i for _, indexes in groups(name, lines) for i in indexes}
+    return [line for i, line in enumerate(lines) if line.strip() and i not in own and not line.startswith(marker)]
+
+
+def keep_copy(lines):
+    """Save the crontab as it was before an edit, keeping the last KEPT_COPIES."""
+    CRONTAB_COPIES.mkdir(parents=True, exist_ok=True)
+    copy = CRONTAB_COPIES / f"{datetime.now(timezone.utc):%Y%m%dT%H%M%S.%fZ}.txt"
+    copy.write_text("\n".join(lines) + "\n")
+    for old in sorted(CRONTAB_COPIES.glob("*.txt"))[:-KEPT_COPIES]:
+        old.unlink()
+
+
 def read_crontab():
-    """The crontab's text, "" when there is none."""
+    """The crontab's text, "" when there is none. Any other failure is a CrontabError, so an edit
+    never starts from an empty crontab that isn't."""
     result = subprocess.run(["crontab", "-l"], capture_output=True, text=True, timeout=10)
-    return result.stdout if result.returncode == 0 else ""
+    if result.returncode == 0:
+        return result.stdout
+    if result.stderr.startswith(NO_CRONTAB):
+        return ""
+    raise CrontabError(f"crontab -l failed: {result.stderr.strip() or result.returncode}")
 
 
 def write_crontab(text):

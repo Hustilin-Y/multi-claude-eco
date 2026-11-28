@@ -325,7 +325,7 @@ class Panel:
                 return f"{bot.name()} deletes it and confirms in the chat."
             if command not in ("pause", "resume") or not cronjobs.set_paused(user.name, job.id, command == "pause"):
                 raise Refused(f"Couldn't {command} it.")
-        except (subprocess.SubprocessError, OSError) as e:
+        except (subprocess.SubprocessError, OSError, cronjobs.CrontabError) as e:
             raise Refused(f"Couldn't change the crontab: {e}") from None
         return "Paused." if command == "pause" else "Resumed."
 
@@ -411,7 +411,7 @@ class Panel:
         status = usage.snapshot(user) or {}
         checked, servers = self.servers.get(user.name, (None, []))
         person, entry = load_person(user.name), registry.load_users()[user.name]
-        jobs = cronjobs.jobs(user.name, cronjobs.read_crontab())
+        jobs = cronjobs.jobs_now(user.name)
         return {"answer": self.answers.get(user.name), "bot": bot.name(), "addons": list(addons.names()),
                 "person": person_part(entry), "claude": claude_part(user, status),
                 "usage": usage_part(status), "jobs": jobs_part(jobs, now),

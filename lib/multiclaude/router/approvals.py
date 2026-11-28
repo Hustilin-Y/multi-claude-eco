@@ -81,7 +81,7 @@ def question_blocks(dialog):
 def save_question(session, message_id, blocks):
     try:
         jsonfile.write_json(paths.ASKS / str(session.chat_id) / f"{message_id}.json",
-                            {"blocks": blocks, "options": [APPROVE, DENY], "kind": "approval"})
+                            {"blocks": blocks, "options": [APPROVE, DENY], "kind": questions.APPROVAL})
     except OSError as e:
         log(f"{session.name}: can't save approval question {message_id}: {e}")
 

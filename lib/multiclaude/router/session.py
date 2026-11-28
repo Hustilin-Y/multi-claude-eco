@@ -10,7 +10,7 @@ from multiclaude.channels import TelegramChat
 from multiclaude.log import log
 from multiclaude.router import claude_ui, recovery
 from multiclaude.router.transcript import CLEAR_MARKER, INTERRUPTED_MARKER, Tail
-from multiclaude.router.turn import STALE_AFTER, Turn, telling
+from multiclaude.router.turn import STALE_AFTER, Turn, turn_event
 
 POLL = 0.5
 READY_AFTER = 8           # seconds a freshly started claude gets before anything is typed into it
@@ -69,12 +69,11 @@ class Session:
         self.recover()
 
     def recover(self):
-        """Pick up the live session's state from the end of its newest transcript, as far back as
-        the latest entry that says something about a turn (Tail.recent), without acting on old
+        """Pick up the live session's state from the end of its newest transcript (Tail.recent), without acting on old
         entries: their notices are dropped, and add-ins never see them (on_transcript_entry)."""
         newest = self.tail.newest()
         if newest:
-            for entry in self.tail.recent(newest, telling):
+            for entry in self.tail.recent(newest, turn_event):
                 self.turn.handle(entry)
             self.turn.last_write = os.path.getmtime(newest)
             if time.time() - self.turn.last_write > STALE_AFTER:
@@ -86,13 +85,14 @@ class Session:
     def read(self, now, on_entry=None):
         """Follow the transcripts; the new entries. on_entry(entry), if given, sees each one before
         the turn does."""
-        entries = self.tail.read_new(now)
+        entries = self.tail.read_new()
         if entries:
             self.turn.last_write = now
         for entry in entries:
             if on_entry:
                 on_entry(entry)
             self.turn.handle(entry)
+        self.turn.settle(now)
         self.keep_scheduled()
         if self.approval:
             self.turn.postpone_stuck(now)  # it waits for the person's tap, not stuck
@@ -217,9 +217,8 @@ class Session:
         return not (background.still_running(self.name) or self.schedules_inside(now, proc[1]))
 
     def hibernate(self, pid):
-        """Put the session to sleep: exit claude as for an update restart, mark it asleep, so
-        `assistant start-users` leaves it be, and end its tmux session, run loop and all, before
-        that loop starts claude again (it waits 5 seconds). Whether it went."""
+        """Exit claude as for an update restart, mark it asleep for `assistant start-users`, and end its tmux
+        session, run loop and all, before that loop starts claude again (it waits 5 seconds)."""
         self.restart(pid)
         asleep.mark(self.name)
         try:
@@ -227,8 +226,6 @@ class Session:
         except (subprocess.SubprocessError, OSError) as e:
             asleep.unmark(self.name)
             log(f"{self.name}: can't end its tmux session, so it stays up: {e}")
-            return False
-        return True
 
     def wake_up(self, fresh=False):
         """Start a sleeping session again (`assistant wake`), with a new conversation if fresh,

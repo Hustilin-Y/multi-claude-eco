@@ -105,6 +105,35 @@ def enable_addons(root, *names):
     write_json(path, {**config, "addons": list(names)})
 
 
+STOP_AND_TELL = """#!/bin/sh
+# claude, for run-user.sh: write what it got in its environment, then end the run loop.
+env > "$HOME/claude-env"
+kill -TERM "$PPID"
+"""
+SET_BY_RUN_USER = ("ASSISTANT_LOCATION", "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE")
+
+
+def session_env(tmp_path, *addons, **entry):
+    """The environment bin/run-user.sh starts alice's claude with, with those add-ins on and those
+    fields in her users.json entry."""
+    home = tmp_path / "home"
+    root = home / "assistant"
+    (root / "bin").mkdir(parents=True)
+    for script in ("run-user.sh", "common.sh"):
+        shutil.copy2(BIN / script, root / "bin" / script)
+    write_json(root / "users.json", {"alice": {"telegram_id": ALICE_CHAT, "display": "Alice", **entry}})
+    enable_addons(root, *addons)
+    (home / "workspaces" / "alice").mkdir(parents=True)
+    claude = home / ".local" / "bin" / "claude"
+    claude.parent.mkdir(parents=True)
+    claude.write_text(STOP_AND_TELL)
+    claude.chmod(0o755)
+    env = {key: value for key, value in os.environ.items() if key not in SET_BY_RUN_USER}
+    subprocess.run([str(root / "bin" / "run-user.sh"), "alice"], env={**env, "HOME": str(home)},
+                   capture_output=True, timeout=30)
+    return dict(line.split("=", 1) for line in (home / "claude-env").read_text().splitlines() if "=" in line)
+
+
 def nowhere():
     """A Bot API address where nothing listens."""
     sock = socket.create_server(("127.0.0.1", 0))
@@ -438,16 +467,24 @@ def r(tmp_path, monkeypatch):
                         rich=rich,
                         messages=inbound, limits=limits, plugins=plugins, poller=poller, recovery=recovery, session=session,
                         switching=switching, upgrade=upgrade, usage=usage, work=work,
-                        api_calls=[], keystrokes=[], unreachable=False)
+                        api_calls=[], keystrokes=[], unreachable=False, results={}, uploads=[])
 
     class RecordingBot:
-        """The router's BotApi: records each call; with r.unreachable set, Telegram can't be reached."""
+        """The router's BotApi: records each call (and the files it uploads, read as it's made, in
+        r.uploads); with r.unreachable set, Telegram can't be reached; r.results[method] adds to
+        what a send answers, or is what anything else answers, or an exception it raises."""
 
         def call(self, method, files=None, **params):
             if r.unreachable:
                 raise telegram.Unreachable(f"{method}: no network")
             r.api_calls.append((method, params))
-            return {"message_id": 900 + len(r.api_calls)} if method.startswith("send") else True
+            r.uploads.append({field: Path(path).read_bytes() for field, path in (files or {}).items()})
+            result = r.results.get(method)
+            if isinstance(result, Exception):
+                raise result
+            if method.startswith("send"):
+                return {"message_id": 900 + len(r.api_calls), **(result or {})}
+            return True if result is None else result
 
     def run_tmux(*args, stdin=None):
         r.keystrokes.append((args, stdin))
@@ -456,6 +493,7 @@ def r(tmp_path, monkeypatch):
 
     bot = RecordingBot()
     monkeypatch.setattr(telegram, "bot", lambda: bot)
+    monkeypatch.setattr(telegram, "uploading_bot", lambda: bot)
     monkeypatch.setattr(telegram, "later", lambda fn, *a, **k: fn(*a, **k))
     monkeypatch.setattr(desk, "in_background", lambda fn, *a: fn(*a))
     monkeypatch.setattr(work.Worker, "start", lambda self: None)  # tests drive the queues themselves
