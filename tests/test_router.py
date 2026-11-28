@@ -280,6 +280,90 @@ def test_session_start_forgets_a_turn_that_went_quiet_long_ago(r, tmp_path):
     assert not session(r, tmp_path).turn.busy
 
 
+REPLY = {"type": "assistant", "message": {"content": [{"type": "text", "text": "On it"}]}}
+TURN_END = {"type": "system", "subtype": "turn_duration"}
+TOOL_RESULT = {"type": "user", "message": {"content": [{"type": "tool_result", "content": "x" * 300}]}}
+
+
+def long_transcript(tmp_path, *entries):
+    """A person's transcript holding a long conversation before these entries."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    append(proj / "a.jsonl", *[REPLY, TURN_END] * 500, *entries)
+    return proj / "a.jsonl"
+
+
+def reads_of(r, monkeypatch):
+    """Where in a transcript each read started, as (offset, bytes to its end)."""
+    reads, read = [], r.session.Tail.read
+
+    def recording(tail, path):
+        reads.append((tail.offsets.get(path, 0), os.path.getsize(path) - tail.offsets.get(path, 0)))
+        return read(tail, path)
+
+    monkeypatch.setattr(r.session.Tail, "read", recording)
+    return reads
+
+
+def test_session_start_reads_only_the_end_of_a_long_transcript(r, tmp_path, monkeypatch):
+    from multiclaude.router import transcript
+    monkeypatch.setattr(transcript, "RECENT", 2000)
+    path = long_transcript(tmp_path, REPLY)
+    reads = reads_of(r, monkeypatch)
+
+    s = session(r, tmp_path)
+
+    assert s.turn.in_turn and s.turn.busy
+    assert [size <= 2000 for _, size in reads] == [True]
+    assert s.tail.offsets == {str(path): path.stat().st_size} and s.tail.read_new() == []
+
+
+@pytest.mark.parametrize("before, in_turn", [(REPLY, True), (TURN_END, False)])
+def test_session_start_reads_back_to_the_turn_when_the_end_says_nothing_about_it(r, tmp_path, monkeypatch, before, in_turn):
+    """A turn that started before the part read: tool results alone don't say whether one runs."""
+    from multiclaude.router import transcript
+    monkeypatch.setattr(transcript, "RECENT", 2000)
+    path = long_transcript(tmp_path, before, *[TOOL_RESULT] * 40)
+    reads = reads_of(r, monkeypatch)
+
+    s = session(r, tmp_path)
+
+    assert s.turn.in_turn is in_turn
+    assert len(reads) > 1 and all(0 < offset for offset, _ in reads)  # further back each time, never from the top
+    assert reads[-1][1] < path.stat().st_size / 2
+
+
+@pytest.mark.parametrize("entry, event", [
+    ({"type": "queue-operation", "operation": "enqueue"}, "queued"),
+    (REPLY, "reply"),
+    (TURN_END, "ended"),
+    ({"type": "user", "message": {"content": "[Request interrupted by user]"}}, "interrupted"),
+    ({"type": "user", "queueTranscriptOnly": True, "message": {"content": "a task's report"}}, "noted"),
+    (TOOL_RESULT, None),
+    ({"type": "system", "subtype": "compact_boundary"}, None),
+])
+def test_the_entries_read_back_to_at_start_are_those_a_turn_acts_on(r, entry, event):
+    from multiclaude.router.turn import turn_event
+    assert turn_event(entry) == event
+
+
+def test_the_end_of_a_transcript_starts_at_a_line(r, tmp_path):
+    path = tmp_path / "t.jsonl"
+    append(path, *[{"n": n} for n in range(1, 10)])
+    line = len(json.dumps({"n": 9})) + 1
+    tail = r.session.Tail(tmp_path)
+
+    def last(window, telling=lambda entry: True):
+        return [entry["n"] for entry in tail.recent(str(path), telling, window)]
+
+    assert last(line) == [9]                # a line that starts where the part read does is kept
+    assert last(line + 1) == [9]            # one it cuts through is left out
+    assert last(line - 1) == [7, 8, 9]      # no line starts in it: four times as far back
+    assert last(line, lambda entry: entry["n"] == 7) == [6, 7, 8, 9]
+    assert last(line, lambda entry: False) == list(range(1, 10))
+    assert tail.recent(str(tmp_path / "gone.jsonl"), lambda entry: True) == []
+
+
 def test_session_read_reports_a_stuck_turn_and_saves_its_screen(r, tmp_path):
     s = session(r, tmp_path)
     s.turn.busy, s.turn.last_write = True, time.time() - r.session.STALE_AFTER - 1

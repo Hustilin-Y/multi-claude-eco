@@ -39,6 +39,23 @@ def interrupted(entry):
     return any(isinstance(b, dict) and str(b.get("text") or "").startswith(INTERRUPTED_MARKER) for b in blocks)
 
 
+def turn_event(entry):
+    """What an entry tells Turn.handle about a turn, or None. Starting up, a session's transcript is read
+    back to the latest entry that tells something (Tail.recent)."""
+    kind = entry.get("type")
+    if kind == "queue-operation":
+        return "queued"
+    if kind == "assistant":
+        return "reply"
+    if kind == "system" and entry.get("subtype") == "turn_duration":
+        return "ended"
+    if kind == "user" and interrupted(entry):
+        return "interrupted"
+    if kind == "user" and entry.get("queueTranscriptOnly"):
+        return "noted"
+    return None
+
+
 class Turn:
     """One session's work: busy from a queued message until the turn that handles it ends."""
 
@@ -86,16 +103,17 @@ class Turn:
         kind = entry.get("type")
         if kind == "assistant" or (kind == "user" and not entry.get("queueTranscriptOnly")):
             self.ended_with_queue = False
-        if kind == "queue-operation":
+        event = turn_event(entry)
+        if event == "queued":
             self.busy, self.only_queued = True, False
             self.pending = self.pending + 1 if entry.get("operation") == "enqueue" else max(0, self.pending - 1)
-        elif kind == "assistant":
+        elif event == "reply":
             self.handle_reply(entry)
-        elif kind == "user" and interrupted(entry) and self.pending == 0:
+        elif event == "interrupted" and self.pending == 0:
             self.end()  # Escape (or /stop) ends a turn without the usual turn_duration entry
-        elif kind == "user" and entry.get("queueTranscriptOnly") and self.pending == 0 and not self.in_turn:
+        elif event == "noted" and self.pending == 0 and not self.in_turn:
             self.end()  # a queued item Claude Code only wrote down, starting no turn
-        elif kind == "system" and entry.get("subtype") == "turn_duration":
+        elif event == "ended":
             if self.pending == 0:
                 self.end()
             else:

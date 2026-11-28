@@ -7,6 +7,7 @@ import re
 CLEAR_MARKER = "<command-name>/clear</command-name>"
 # Claude Code's note when Escape stops a turn: "[Request interrupted by user]", or "… for tool use]".
 INTERRUPTED_MARKER = "[Request interrupted by user"
+RECENT = 4 * 1024 * 1024  # bytes at the end of a transcript read to pick up a session's state (Tail.recent)
 RESULT_RE = re.compile(r"<local-command-(stdout|stderr)>(.*?)</local-command-\1>", re.S)
 
 
@@ -29,6 +30,25 @@ class Tail:
 
     def skip_existing(self):
         self.offsets.update(self.sizes())
+
+    def recent(self, path, telling, window=None):
+        """The entries of the lines that start in path's last `window` bytes (RECENT), or in four times as many
+        each time telling(entry) holds for none of them, up to the whole file."""
+        window = window or RECENT
+        while True:
+            try:
+                start = max(0, os.path.getsize(path) - window)
+                if start:
+                    with open(path, "rb") as f:
+                        f.seek(start - 1)  # from the byte before, so a line starting right at the window is kept
+                        start += len(f.readline()) - 1  # the rest of the line the window cuts through
+            except OSError:
+                return []
+            self.offsets[path] = start
+            entries = self.read(path)
+            if not start or any(telling(entry) for entry in entries):
+                return entries
+            window *= 4
 
     def read(self, path):
         """The entries written to path since the last read; a half-written last line waits."""
